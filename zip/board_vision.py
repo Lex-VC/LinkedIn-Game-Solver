@@ -5,7 +5,7 @@ import pytesseract
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-TESSERACT_DIGIT_CONFIG = "--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789"
+TESSERACT_DIGIT_CONFIG = "--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789"
 
 
 class GridInfo:
@@ -158,40 +158,40 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
 
 
 def _preprocess_circle_roi(roi: np.ndarray) -> np.ndarray:
+    # Circle is near-black with white text. Invert so the circle body becomes
+    # white and the text becomes black — the polarity Tesseract expects.
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    thresh = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2,
-    )
+    inverted = cv2.bitwise_not(gray)
+    _, thresh = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return cv2.resize(thresh, (64, 64), interpolation=cv2.INTER_CUBIC)
 
 
 def find_numbers(img: np.ndarray, grid: GridInfo) -> list[NumberCell]:
     grid_crop = img[grid.y : grid.y + grid.height, grid.x : grid.x + grid.width]
     gray = cv2.cvtColor(grid_crop, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    _, dark_mask = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY_INV)
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, k)
-    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, k)
+    circles = cv2.HoughCircles(
+        blurred, cv2.HOUGH_GRADIENT, dp=1,
+        minDist=grid.cell_w * 0.6,
+        param1=50, param2=25,
+        minRadius=int(grid.cell_w * 0.20),
+        maxRadius=int(grid.cell_w * 0.45),
+    )
 
-    contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if circles is None:
+        return []
 
-    cell_area = grid.cell_w * grid.cell_h
     results: list[NumberCell] = []
+    for cx, cy, r in np.round(circles[0]).astype(int):
+        col = max(0, min(int(cx / grid.cell_w), grid.cols - 1))
+        row = max(0, min(int(cy / grid.cell_h), grid.rows - 1))
 
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if not (cell_area * 0.08 < area < cell_area * 0.75):
-            continue
-        perimeter = cv2.arcLength(cnt, True)
-        if perimeter == 0 or (4 * np.pi * area / perimeter ** 2) < 0.5:
-            continue
-
-        bx, by, bw, bh = cv2.boundingRect(cnt)
-        col = max(0, min(int((bx + bw / 2) / grid.cell_w), grid.cols - 1))
-        row = max(0, min(int((by + bh / 2) / grid.cell_h), grid.rows - 1))
-
-        roi = grid_crop[max(0, by - 2): by + bh + 2, max(0, bx - 2): bx + bw + 2]
+        x1 = max(0, cx - r - 2)
+        y1 = max(0, cy - r - 2)
+        x2 = min(grid_crop.shape[1], cx + r + 2)
+        y2 = min(grid_crop.shape[0], cy + r + 2)
+        roi = grid_crop[y1:y2, x1:x2]
         if roi.size == 0:
             continue
 
