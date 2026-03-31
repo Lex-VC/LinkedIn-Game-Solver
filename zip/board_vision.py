@@ -1,11 +1,42 @@
 import mss
 import numpy as np
 import cv2
-import pytesseract
+from pathlib import Path
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+TEMPLATE_SIZE = (64, 64)
+MATCH_THRESHOLD = 0.6
 
-TESSERACT_DIGIT_CONFIG = "--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789"
+_templates: dict[int, list[np.ndarray]] = {}
+
+
+def _augment_template(img: np.ndarray, shift: int = 4, step: int = 2) -> list[np.ndarray]:
+    """Generate shifted variants of a template to handle crop misalignment."""
+    h, w = img.shape
+    variants = [img]
+    for dx in range(-shift, shift + 1, step):
+        for dy in range(-shift, shift + 1, step):
+            if dx == 0 and dy == 0:
+                continue
+            M = np.float32([[1, 0, dx], [0, 1, dy]])
+            variants.append(cv2.warpAffine(img, M, (w, h), borderValue=0))
+    return variants
+
+
+def _load_templates() -> dict[int, list[np.ndarray]]:
+    """Load and preprocess number templates from the templates directory.
+    Files must be named by their number: 1.png, 2.png, ... 16.png
+    """
+    if _templates:
+        return _templates
+    for path in TEMPLATE_DIR.glob("*.png"):
+        if path.stem.isdigit():
+            img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                resized = cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
+                _templates[int(path.stem)] = _augment_template(resized)
+    return _templates
 
 
 class GridInfo:
@@ -110,6 +141,18 @@ def _best_uniform_cluster(positions: list[int], min_count: int = 3,
     return best
 
 
+def _extend_cluster(cluster: list[int], image_size: int) -> list[list[int]]:
+    """Return candidates with one extra line prepended and/or appended."""
+    gaps = [cluster[i + 1] - cluster[i] for i in range(len(cluster) - 1)]
+    gap = int(np.median(gaps))
+    candidates = []
+    if cluster[0] - gap >= 0:
+        candidates.append([cluster[0] - gap] + cluster)
+    if cluster[-1] + gap < image_size:
+        candidates.append(cluster + [cluster[-1] + gap])
+    return candidates
+
+
 def find_grid(img: np.ndarray) -> GridInfo | None:
     mask = _grid_line_mask(img)
 
@@ -122,7 +165,6 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
                                cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1)))
     v_lines = cv2.morphologyEx(v_mask, cv2.MORPH_OPEN,
                                cv2.getStructuringElement(cv2.MORPH_RECT, (1, 50)))
-
 
     expand = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
     intersections = cv2.bitwise_and(
@@ -144,6 +186,28 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
 
     rows = len(h_cluster) - 1
     cols = len(v_cluster) - 1
+
+    # If not square, try extending the shorter axis one line at a time
+    if rows != cols:
+        target = max(rows, cols)
+        for _ in range(2):  # allow up to 2 extensions
+            rows = len(h_cluster) - 1
+            cols = len(v_cluster) - 1
+            if rows == cols:
+                break
+            if rows < cols:
+                for candidate in _extend_cluster(h_cluster, img.shape[0]):
+                    if len(candidate) - 1 <= target:
+                        h_cluster = candidate
+                        break
+            else:
+                for candidate in _extend_cluster(v_cluster, img.shape[1]):
+                    if len(candidate) - 1 <= target:
+                        v_cluster = candidate
+                        break
+
+    rows = len(h_cluster) - 1
+    cols = len(v_cluster) - 1
     if rows < 2 or cols < 2:
         return None
 
@@ -157,13 +221,26 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
     )
 
 
-def _preprocess_circle_roi(roi: np.ndarray) -> np.ndarray:
-    # Circle is near-black with white text. Invert so the circle body becomes
-    # white and the text becomes black — the polarity Tesseract expects.
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    inverted = cv2.bitwise_not(gray)
-    _, thresh = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return cv2.resize(thresh, (64, 64), interpolation=cv2.INTER_CUBIC)
+def _preprocess_roi(roi: np.ndarray) -> np.ndarray:
+    """Convert an ROI to a binary image matching the template format."""
+    if len(roi.shape) == 3:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = roi
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return cv2.resize(thresh, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
+
+
+def _score_templates(roi_processed: np.ndarray) -> dict[int, float]:
+    """Return the best match score for every loaded template number."""
+    templates = _load_templates()
+    scores: dict[int, float] = {}
+    for num, variants in templates.items():
+        scores[num] = max(
+            float(cv2.matchTemplate(roi_processed, tmpl, cv2.TM_CCOEFF_NORMED)[0][0])
+            for tmpl in variants
+        )
+    return scores
 
 
 def find_numbers(img: np.ndarray, grid: GridInfo) -> list[NumberCell]:
@@ -182,30 +259,103 @@ def find_numbers(img: np.ndarray, grid: GridInfo) -> list[NumberCell]:
     if circles is None:
         return []
 
-    results: list[NumberCell] = []
+    # Collect (row, col, scores) for every detected circle
+    candidates: list[tuple[int, int, dict[int, float]]] = []
     for cx, cy, r in np.round(circles[0]).astype(int):
         col = max(0, min(int(cx / grid.cell_w), grid.cols - 1))
         row = max(0, min(int(cy / grid.cell_h), grid.rows - 1))
 
-        x1 = max(0, cx - r - 2)
-        y1 = max(0, cy - r - 2)
-        x2 = min(grid_crop.shape[1], cx + r + 2)
-        y2 = min(grid_crop.shape[0], cy + r + 2)
+        inner = int(r * 0.6)
+        x1 = max(0, cx - inner)
+        y1 = max(0, cy - inner)
+        x2 = min(grid_crop.shape[1], cx + inner)
+        y2 = min(grid_crop.shape[0], cy + inner)
         roi = grid_crop[y1:y2, x1:x2]
         if roi.size == 0:
             continue
 
-        text = pytesseract.image_to_string(
-            _preprocess_circle_roi(roi), config=TESSERACT_DIGIT_CONFIG
-        ).strip()
-        if text.isdigit():
-            results.append(NumberCell(row=row, col=col, number=int(text)))
+        candidates.append((row, col, _score_templates(_preprocess_roi(roi))))
+
+    # Greedy global assignment: always pick the highest-confidence (circle, number)
+    # pair, assign it, then remove both from the pool so each number is used once.
+    unassigned = list(range(len(candidates)))
+    used_numbers: set[int] = set()
+    results: list[NumberCell] = []
+
+    while unassigned:
+        best_score = -1.0
+        best_ci = -1
+        best_num = -1
+        for ci in unassigned:
+            row, col, scores = candidates[ci]
+            for num, score in scores.items():
+                if num not in used_numbers and score > best_score:
+                    best_score = score
+                    best_ci = ci
+                    best_num = num
+
+        if best_score < MATCH_THRESHOLD:
+            break
+
+        row, col, _ = candidates[best_ci]
+        results.append(NumberCell(row=row, col=col, number=best_num))
+        used_numbers.add(best_num)
+        unassigned.remove(best_ci)
 
     results.sort(key=lambda c: c.number)
     return results
 
 
-def draw_debug(img: np.ndarray, grid: GridInfo, cells: list[NumberCell]) -> np.ndarray:
+WallSet = set[tuple[int, int]]
+
+
+def find_walls(img: np.ndarray, grid: GridInfo) -> tuple[WallSet, WallSet]:
+    """Detect walls on cell edges.
+
+    Returns:
+        h_walls: (r, c) means a wall on the bottom edge of cell (r, c) / top of (r+1, c)
+        v_walls: (r, c) means a wall on the right edge of cell (r, c) / left of (r, c+1)
+    """
+    grid_crop = img[grid.y : grid.y + grid.height, grid.x : grid.x + grid.width]
+    gray = cv2.cvtColor(grid_crop, cv2.COLOR_BGR2GRAY)
+    dark = (gray < 60).astype(np.uint8)
+
+    half_thick = max(4, int(min(grid.cell_w, grid.cell_h) * 0.08))
+    sample_frac = 0.5   # sample middle 50% of each edge to avoid corners
+    dark_threshold = 0.3
+
+    h_walls: WallSet = set()
+    v_walls: WallSet = set()
+
+    for r in range(grid.rows - 1):
+        ey = int((r + 1) * grid.cell_h)
+        y1 = max(0, ey - half_thick)
+        y2 = min(grid_crop.shape[0], ey + half_thick)
+        for c in range(grid.cols):
+            margin = grid.cell_w * (1 - sample_frac) / 2
+            x1 = int(c * grid.cell_w + margin)
+            x2 = int((c + 1) * grid.cell_w - margin)
+            strip = dark[y1:y2, x1:x2]
+            if strip.size > 0 and strip.mean() > dark_threshold:
+                h_walls.add((r, c))
+
+    for c in range(grid.cols - 1):
+        ex = int((c + 1) * grid.cell_w)
+        x1 = max(0, ex - half_thick)
+        x2 = min(grid_crop.shape[1], ex + half_thick)
+        for r in range(grid.rows):
+            margin = grid.cell_h * (1 - sample_frac) / 2
+            y1 = int(r * grid.cell_h + margin)
+            y2 = int((r + 1) * grid.cell_h - margin)
+            strip = dark[y1:y2, x1:x2]
+            if strip.size > 0 and strip.mean() > dark_threshold:
+                v_walls.add((r, c))
+
+    return h_walls, v_walls
+
+
+def draw_debug(img: np.ndarray, grid: GridInfo, cells: list[NumberCell],
+               h_walls: WallSet | None = None, v_walls: WallSet | None = None) -> np.ndarray:
     out = img.copy()
     cv2.rectangle(out, (grid.x, grid.y),
                   (grid.x + grid.width, grid.y + grid.height), (0, 255, 0), 2)
@@ -220,10 +370,22 @@ def draw_debug(img: np.ndarray, grid: GridInfo, cells: list[NumberCell]) -> np.n
         cy = int(grid.y + (cell.row + 0.5) * grid.cell_h)
         cv2.putText(out, str(cell.number), (cx - 8, cy + 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    if h_walls:
+        for r, c in h_walls:
+            y = int(grid.y + (r + 1) * grid.cell_h)
+            x1 = int(grid.x + c * grid.cell_w)
+            x2 = int(grid.x + (c + 1) * grid.cell_w)
+            cv2.line(out, (x1, y), (x2, y), (0, 0, 255), 4)
+    if v_walls:
+        for r, c in v_walls:
+            x = int(grid.x + (c + 1) * grid.cell_w)
+            y1 = int(grid.y + r * grid.cell_h)
+            y2 = int(grid.y + (r + 1) * grid.cell_h)
+            cv2.line(out, (x, y1), (x, y2), (0, 0, 255), 4)
     return out
 
 
-def detect_board(debug: bool = False) -> tuple[GridInfo | None, list[NumberCell]]:
+def detect_board(debug: bool = False) -> tuple[GridInfo | None, list[NumberCell], WallSet, WallSet]:
     print("Capturing screen ...")
     img = capture_screen()
 
@@ -231,7 +393,7 @@ def detect_board(debug: bool = False) -> tuple[GridInfo | None, list[NumberCell]
     grid = find_grid(img)
     if grid is None:
         print("ERROR: Could not find the game grid on screen.")
-        return None, []
+        return None, [], set(), set()
 
     print(f"Grid found: {grid.cols}x{grid.rows} at ({grid.x}, {grid.y}), "
           f"{grid.width}x{grid.height}px, cell ~{grid.cell_w:.1f}x{grid.cell_h:.1f}px")
@@ -246,12 +408,17 @@ def detect_board(debug: bool = False) -> tuple[GridInfo | None, list[NumberCell]
     else:
         print("WARNING: No numbered cells detected.")
 
+    print("Detecting walls ...")
+    h_walls, v_walls = find_walls(img, grid)
+    print(f"  Horizontal walls: {sorted(h_walls)}")
+    print(f"  Vertical walls:   {sorted(v_walls)}")
+
     if debug:
-        cv2.imshow("Zip -- board detection", draw_debug(img, grid, cells))
+        cv2.imshow("Zip -- board detection", draw_debug(img, grid, cells, h_walls, v_walls))
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
-    return grid, cells
+    return grid, cells, h_walls, v_walls
 
 
 if __name__ == "__main__":

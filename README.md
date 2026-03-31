@@ -1,2 +1,7 @@
-# LinkedIn-Game-Solver
-A bot using machine vision to complete all LinkedIn games in record time!
+# LinkedIn Game Solver
+
+A bot using machine vision to complete LinkedIn games automatically.
+
+## Games
+
+- [Zip](zip/README.md)
