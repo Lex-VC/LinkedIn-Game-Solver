@@ -70,13 +70,15 @@ def capture_screen() -> np.ndarray:
         return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
 
 
-def _grid_line_mask(img: np.ndarray) -> np.ndarray:
+def _grid_line_mask(img: np.ndarray,
+                    gray_lo: int = 100, gray_hi: int = 235,
+                    sat_cap: int = 40) -> np.ndarray:
     """Pixels that are medium gray and unsaturated — the grid line colour."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     b, g, r = cv2.split(img)
     max_diff = cv2.max(cv2.max(cv2.absdiff(b, g), cv2.absdiff(g, r)), cv2.absdiff(b, r))
-    low_sat = (max_diff < 40).astype(np.uint8) * 255
-    in_range = cv2.inRange(gray, 100, 235)
+    low_sat = (max_diff < sat_cap).astype(np.uint8) * 255
+    in_range = cv2.inRange(gray, gray_lo, gray_hi)
     return cv2.bitwise_and(low_sat, in_range)
 
 
@@ -153,27 +155,82 @@ def _extend_cluster(cluster: list[int], image_size: int) -> list[list[int]]:
     return candidates
 
 
-def find_grid(img: np.ndarray) -> GridInfo | None:
-    mask = _grid_line_mask(img)
+def _line_strength(mask: np.ndarray, pos: int, axis: int) -> float:
+    """Mean mask value along a row (axis=0) or column (axis=1) at position pos."""
+    if axis == 0:
+        if pos < 0 or pos >= mask.shape[0]:
+            return 0.0
+        return float(mask[pos, :].mean())
+    else:
+        if pos < 0 or pos >= mask.shape[1]:
+            return 0.0
+        return float(mask[:, pos].mean())
 
+
+def _trim_weak_ends(cluster: list[int], excess: int, mask: np.ndarray, axis: int) -> list[int]:
+    """Remove `excess` lines from whichever ends of the cluster score lowest on the mask."""
+    c = list(cluster)
+    for _ in range(excess):
+        score_first = _line_strength(mask, c[0], axis)
+        score_last  = _line_strength(mask, c[-1], axis)
+        if score_first <= score_last:
+            c = c[1:]   # top/left end is weaker — trim it
+        else:
+            c = c[:-1]  # bottom/right end is weaker — trim it
+    return c
+
+
+def _extend_to_count(cluster: list[int], target: int, mask: np.ndarray,
+                     axis: int, img_size: int) -> list[int]:
+    """Extend cluster to `target` lines by repeatedly adding to whichever end
+    has a stronger mask signal at the extrapolated position."""
+    c = list(cluster)
+    while len(c) < target:
+        gap = c[1] - c[0]  # use detected spacing (uniform by construction)
+        before = c[0] - gap
+        after  = c[-1] + gap
+        score_before = _line_strength(mask, before, axis) if before >= 0 else -1.0
+        score_after  = _line_strength(mask, after, axis) if after < img_size else -1.0
+        if score_before <= 0 and score_after <= 0:
+            break  # nowhere valid to extend
+        if score_before >= score_after:
+            c = [before] + c
+        else:
+            c = c + [after]
+    return c
+
+
+_MASK_PROFILES = [
+    # (gray_lo, gray_hi, sat_cap) — tried in order, first valid grid wins
+    (100, 235, 40),   # default: medium gray
+    ( 80, 245, 50),   # slightly wider range for dimmer/brighter displays
+    ( 60, 250, 60),   # aggressive: very dim or washed-out displays
+    (120, 210, 35),   # tighter: high-contrast displays with lots of gray UI
+]
+
+
+def _try_find_grid(img: np.ndarray, mask: np.ndarray,
+                   dilate_k: int, open_k: int, expand_k: int,
+                   merge_gap: int) -> GridInfo | None:
+    """Core grid-finding logic on a pre-computed mask."""
     # Directional dilation bridges sub-pixel gaps in thin lines
-    h_mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 1)))
-    v_mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 9)))
+    h_mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_k, 1)))
+    v_mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (1, dilate_k)))
 
-    # 50px open filters out short corner arcs, keeping only full grid lines
+    # Open filters out short corner arcs, keeping only full grid lines
     h_lines = cv2.morphologyEx(h_mask, cv2.MORPH_OPEN,
-                               cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1)))
+                               cv2.getStructuringElement(cv2.MORPH_RECT, (open_k, 1)))
     v_lines = cv2.morphologyEx(v_mask, cv2.MORPH_OPEN,
-                               cv2.getStructuringElement(cv2.MORPH_RECT, (1, 50)))
+                               cv2.getStructuringElement(cv2.MORPH_RECT, (1, open_k)))
 
-    expand = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+    expand = cv2.getStructuringElement(cv2.MORPH_RECT, (expand_k, expand_k))
     intersections = cv2.bitwise_and(
         cv2.dilate(h_lines, expand),
         cv2.dilate(v_lines, expand),
     )
 
-    h_positions = _merge_close(_line_positions(intersections, axis=1))
-    v_positions = _merge_close(_line_positions(intersections, axis=0))
+    h_positions = _merge_close(_line_positions(intersections, axis=1), gap=merge_gap)
+    v_positions = _merge_close(_line_positions(intersections, axis=0), gap=merge_gap)
 
     if not h_positions or not v_positions:
         return None
@@ -187,24 +244,17 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
     rows = len(h_cluster) - 1
     cols = len(v_cluster) - 1
 
-    # If not square, try extending the shorter axis one line at a time
+    # If not square, fix it
     if rows != cols:
-        target = max(rows, cols)
-        for _ in range(2):  # allow up to 2 extensions
-            rows = len(h_cluster) - 1
-            cols = len(v_cluster) - 1
-            if rows == cols:
-                break
-            if rows < cols:
-                for candidate in _extend_cluster(h_cluster, img.shape[0]):
-                    if len(candidate) - 1 <= target:
-                        h_cluster = candidate
-                        break
-            else:
-                for candidate in _extend_cluster(v_cluster, img.shape[1]):
-                    if len(candidate) - 1 <= target:
-                        v_cluster = candidate
-                        break
+        if rows > cols:
+            # More rows than cols — trim spurious lines from whichever end
+            # scores lower against the mask
+            excess = rows - cols
+            h_cluster = _trim_weak_ends(h_cluster, excess, mask, axis=0)
+        else:
+            # More cols than rows — extend h_cluster one line at a time,
+            # always choosing the end (top or bottom) with the stronger mask signal
+            h_cluster = _extend_to_count(h_cluster, cols + 1, mask, axis=0, img_size=img.shape[0])
 
     rows = len(h_cluster) - 1
     cols = len(v_cluster) - 1
@@ -219,6 +269,23 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
         rows   = rows,
         cols   = cols,
     )
+
+
+def find_grid(img: np.ndarray) -> GridInfo | None:
+    h, w = img.shape[:2]
+    ref = min(h, w)
+    dilate_k = max(5, int(ref * 0.006))
+    open_k = max(20, int(ref * 0.035))
+    expand_k = max(12, int(ref * 0.018))
+    merge_gap = max(4, int(ref * 0.006))
+
+    for gray_lo, gray_hi, sat_cap in _MASK_PROFILES:
+        mask = _grid_line_mask(img, gray_lo, gray_hi, sat_cap)
+        result = _try_find_grid(img, mask, dilate_k, open_k, expand_k, merge_gap)
+        if result is not None:
+            return result
+
+    return None
 
 
 def _preprocess_roi(roi: np.ndarray) -> np.ndarray:
