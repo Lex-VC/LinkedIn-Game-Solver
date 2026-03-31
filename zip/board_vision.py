@@ -274,7 +274,8 @@ def find_numbers(img: np.ndarray, grid: GridInfo) -> list[NumberCell]:
 
     # Greedy global assignment: always pick the highest-confidence (circle, number)
     # pair, assign it, then remove both from the pool so each number is used once.
-    unassigned = list(range(len(candidates)))
+    n = len(candidates)
+    unassigned = list(range(n))
     used_numbers: set[int] = set()
     results: list[NumberCell] = []
 
@@ -285,7 +286,7 @@ def find_numbers(img: np.ndarray, grid: GridInfo) -> list[NumberCell]:
         for ci in unassigned:
             row, col, scores = candidates[ci]
             for num, score in scores.items():
-                if num not in used_numbers and score > best_score:
+                if num <= n and num not in used_numbers and score > best_score:
                     best_score = score
                     best_ci = ci
                     best_num = num
