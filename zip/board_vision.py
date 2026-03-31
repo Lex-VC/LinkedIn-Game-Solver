@@ -256,8 +256,15 @@ def find_numbers(img: np.ndarray, grid: GridInfo) -> list[NumberCell]:
         return []
 
     # Collect (row, col, scores) for every detected circle
+    corner_margin = min(grid.cell_w, grid.cell_h) * 0.6
+    grid_corners = [(0, 0), (grid.width, 0), (0, grid.height), (grid.width, grid.height)]
+
     candidates: list[tuple[int, int, dict[int, float]]] = []
     for cx, cy, r in np.round(circles[0]).astype(int):
+        # Skip rounded corner arcs of the grid border
+        if any(np.hypot(cx - gx, cy - gy) < corner_margin for gx, gy in grid_corners):
+            continue
+
         col = max(0, min(int(cx / grid.cell_w), grid.cols - 1))
         row = max(0, min(int(cy / grid.cell_h), grid.rows - 1))
 
