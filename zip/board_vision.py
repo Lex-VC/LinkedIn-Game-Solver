@@ -156,14 +156,10 @@ def _extend_cluster(cluster: list[int], image_size: int) -> list[list[int]]:
 def find_grid(img: np.ndarray) -> GridInfo | None:
     mask = _grid_line_mask(img)
 
-    # Directional dilation bridges sub-pixel gaps in thin lines
-    h_mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 1)))
-    v_mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 9)))
-
     # 50px open filters out short corner arcs, keeping only full grid lines
-    h_lines = cv2.morphologyEx(h_mask, cv2.MORPH_OPEN,
+    h_lines = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
                                cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1)))
-    v_lines = cv2.morphologyEx(v_mask, cv2.MORPH_OPEN,
+    v_lines = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
                                cv2.getStructuringElement(cv2.MORPH_RECT, (1, 50)))
 
     expand = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
