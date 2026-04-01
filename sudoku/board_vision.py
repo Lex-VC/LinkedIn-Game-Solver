@@ -10,34 +10,31 @@ MATCH_THRESHOLD = 0.55
 _templates: dict[int, list[np.ndarray]] = {}
 
 
-def _augment_template(img: np.ndarray, shift: int = 4, step: int = 2) -> list[np.ndarray]:
-    """Generate shifted variants of a template to handle crop misalignment."""
-    h, w = img.shape
-    variants = [img]
-    for dx in range(-shift, shift + 1, step):
-        for dy in range(-shift, shift + 1, step):
-            if dx == 0 and dy == 0:
-                continue
-            M = np.float32([[1, 0, dx], [0, 1, dy]])
-            variants.append(cv2.warpAffine(img, M, (w, h), borderValue=0))
-    return variants
-
-
 def _load_templates() -> dict[int, list[np.ndarray]]:
-    """Load and preprocess digit templates from the templates directory.
-    Files must be named 1.png through 9.png.
+    """Load digit templates from the templates directory.
+
+    Supports two naming conventions:
+      - Single sample:  <digit>.png          (e.g. 3.png)
+      - Multi sample:   <digit>_<NNN>.png    (e.g. 3_001.png, 3_002.png)
+    All samples for the same digit are collected into a list.
     """
     if _templates:
         return _templates
-    for path in TEMPLATE_DIR.glob("*.png"):
-        if path.stem.isdigit():
-            n = int(path.stem)
-            if 1 <= n <= 9:
-                img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-                if img is not None:
-                    _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                    resized = cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
-                    _templates[n] = _augment_template(resized)
+    for path in sorted(TEMPLATE_DIR.glob("*.png")):
+        stem = path.stem
+        # Parse digit from "3" or "3_001"
+        digit_str = stem.split("_", 1)[0]
+        if not digit_str.isdigit():
+            continue
+        n = int(digit_str)
+        if not 1 <= n <= 9:
+            continue
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+        _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        resized = cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
+        _templates.setdefault(n, []).append(resized)
     return _templates
 
 
@@ -226,10 +223,10 @@ def _score_templates(roi_processed: np.ndarray) -> dict[int, float]:
     """Return the best match score for every loaded template digit."""
     templates = _load_templates()
     scores: dict[int, float] = {}
-    for num, variants in templates.items():
+    for num, samples in templates.items():
         scores[num] = max(
             float(cv2.matchTemplate(roi_processed, tmpl, cv2.TM_CCOEFF_NORMED)[0][0])
-            for tmpl in variants
+            for tmpl in samples
         )
     return scores
 
