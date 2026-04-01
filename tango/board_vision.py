@@ -492,7 +492,6 @@ def detect_board(debug: bool = False) -> TangoBoard | None:
     board = TangoBoard(grid, cells, h_con, v_con)
 
     if debug:
-        cv2.imshow("Tango — grid isolation", draw_grid_detection(img))
         cv2.imshow("Tango — board detection", draw_debug(img, board))
         cv2.waitKey(0)
         cv2.destroyAllWindows()
