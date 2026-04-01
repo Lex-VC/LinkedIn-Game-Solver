@@ -10,12 +10,9 @@ EMPTY = 'empty'
 EQUAL = 'equal'       # '=' — adjacent cells must have the same symbol
 OPPOSITE = 'opposite' # '×' — adjacent cells must have different symbols
 
-# After dilating grid-line masks with a 25×25 kernel, a true 1-px line creates
-# an intersection band ~50px wide in the projection.  Grey pre-filled cells
-# survive the morphological open and produce bands of ≈ (cell_size + 50)px —
-# typically >80px.  Keeping only bands ≤ _MAX_LINE_BAND removes the grey-cell
-# artefacts while accepting every real grid-line peak.
-_MAX_LINE_BAND = 155
+# Minimum line length (px) for the morphological open used in grid detection.
+# Must be shorter than any grid line but longer than symbol arc segments.
+_MIN_LINE_LEN = 60
 
 TEMPLATE_DIR            = Path(__file__).parent / "templates"
 CONSTRAINT_TEMPLATE_SIZE = (32, 32)
@@ -76,27 +73,11 @@ def capture_screen() -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Grid detection (shared logic + grey-cell robustness)
+# Grid detection via Canny edges (grey-cell robust)
 # ---------------------------------------------------------------------------
 
-def _grid_line_mask(img: np.ndarray) -> np.ndarray:
-    """Pixels that are medium-gray and unsaturated — the grid-line colour."""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    b, g, r = cv2.split(img)
-    max_diff = cv2.max(cv2.max(cv2.absdiff(b, g), cv2.absdiff(g, r)), cv2.absdiff(b, r))
-    low_sat = (max_diff < 40).astype(np.uint8) * 255
-    in_range = cv2.inRange(gray, 100, 235)
-    return cv2.bitwise_and(low_sat, in_range)
-
-
-def _line_positions(line_img: np.ndarray, axis: int,
-                    max_band_width: int | None = None) -> list[int]:
-    """Project a binary line image and return the centre of each bright band.
-
-    max_band_width: when set, only bands no wider than this are kept —
-    this filters out the wide blobs that grey pre-filled Tango cells produce
-    in the projection after morphological opening and dilation.
-    """
+def _line_positions(line_img: np.ndarray, axis: int) -> list[int]:
+    """Project a binary line image and return the centre of each bright band."""
     projection = line_img.sum(axis=axis).astype(np.float32)
     if projection.max() > 0:
         projection = projection / projection.max() * 255
@@ -110,12 +91,32 @@ def _line_positions(line_img: np.ndarray, axis: int,
             in_run, start = True, i
         elif not v and in_run:
             in_run = False
-            if max_band_width is None or (i - start) <= max_band_width:
-                positions.append((start + i) // 2)
+            positions.append((start + i) // 2)
     if in_run:
-        if max_band_width is None or (len(mask) - start) <= max_band_width:
-            positions.append((start + len(mask)) // 2)
+        positions.append((start + len(mask)) // 2)
     return positions
+
+
+def _extract_grid_lines(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return (h_lines, v_lines) binary masks using Canny edge detection.
+
+    Canny detects transitions, not fills, so the grey pre-filled Tango cells
+    contribute only their border edges (which are real grid lines) and never
+    produce wide blobs in the projection.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    edges = cv2.Canny(blurred, 30, 90)
+
+    # Morphological open keeps only segments longer than _MIN_LINE_LEN,
+    # eliminating symbol arcs, text, and other short edge fragments.
+    h_lines = cv2.morphologyEx(
+        edges, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (_MIN_LINE_LEN, 1)))
+    v_lines = cv2.morphologyEx(
+        edges, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, _MIN_LINE_LEN)))
+    return h_lines, v_lines
 
 
 def _merge_close(positions: list[int], gap: int = 8) -> list[int]:
@@ -167,12 +168,7 @@ def _extend_cluster(cluster: list[int], image_size: int) -> list[list[int]]:
 
 
 def find_grid(img: np.ndarray) -> GridInfo | None:
-    mask = _grid_line_mask(img)
-
-    h_lines = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
-                               cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1)))
-    v_lines = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
-                               cv2.getStructuringElement(cv2.MORPH_RECT, (1, 50)))
+    h_lines, v_lines = _extract_grid_lines(img)
 
     expand = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
     intersections = cv2.bitwise_and(
@@ -180,12 +176,8 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
         cv2.dilate(v_lines, expand),
     )
 
-    # max_band_width rejects wide blobs from grey pre-filled cells.
-    # True grid-line intersections produce bands ≈50px wide; grey cells ≈80+px.
-    h_positions = _merge_close(_line_positions(intersections, axis=1,
-                                               max_band_width=_MAX_LINE_BAND))
-    v_positions = _merge_close(_line_positions(intersections, axis=0,
-                                               max_band_width=_MAX_LINE_BAND))
+    h_positions = _merge_close(_line_positions(intersections, axis=1))
+    v_positions = _merge_close(_line_positions(intersections, axis=0))
 
     if not h_positions or not v_positions:
         return None
@@ -418,6 +410,55 @@ def draw_debug(img: np.ndarray, board: TangoBoard) -> np.ndarray:
     return out
 
 
+def draw_grid_detection(img: np.ndarray) -> np.ndarray:
+    """Return a side-by-side panel showing each stage of grid isolation:
+    original | H-line mask | V-line mask | intersection + detected grid.
+    Useful for diagnosing detection failures.
+    """
+    h_lines, v_lines = _extract_grid_lines(img)
+
+    expand = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+    intersections = cv2.bitwise_and(
+        cv2.dilate(h_lines, expand),
+        cv2.dilate(v_lines, expand),
+    )
+
+    def _to_bgr(mask: np.ndarray) -> np.ndarray:
+        return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+
+    overlay = img.copy()
+    grid = find_grid(img)
+    if grid is not None:
+        g = grid
+        cv2.rectangle(overlay, (g.x, g.y), (g.x + g.width, g.y + g.height), (0, 255, 0), 2)
+        for r in range(g.rows + 1):
+            y = int(g.y + r * g.cell_h)
+            cv2.line(overlay, (g.x, y), (g.x + g.width, y), (0, 200, 0), 1)
+        for c in range(g.cols + 1):
+            x = int(g.x + c * g.cell_w)
+            cv2.line(overlay, (x, g.y), (x, g.y + g.height), (0, 200, 0), 1)
+        label = f"{g.cols}x{g.rows} @ ({g.x},{g.y})"
+    else:
+        label = "NO GRID FOUND"
+
+    h_bgr = _to_bgr(h_lines)
+    v_bgr = _to_bgr(v_lines)
+    inter_bgr = _to_bgr(intersections)
+
+    # Label each panel
+    for panel, text in [
+        (img,       "original"),
+        (h_bgr,     "H lines (Canny)"),
+        (v_bgr,     "V lines (Canny)"),
+        (inter_bgr, "intersections"),
+        (overlay,   label),
+    ]:
+        cv2.putText(panel, text, (6, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1)
+
+    return np.hstack([img, h_bgr, v_bgr, inter_bgr, overlay])
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -451,6 +492,7 @@ def detect_board(debug: bool = False) -> TangoBoard | None:
     board = TangoBoard(grid, cells, h_con, v_con)
 
     if debug:
+        cv2.imshow("Tango — grid isolation", draw_grid_detection(img))
         cv2.imshow("Tango — board detection", draw_debug(img, board))
         cv2.waitKey(0)
         cv2.destroyAllWindows()
