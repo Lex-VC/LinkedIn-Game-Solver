@@ -33,8 +33,8 @@ MATCH_THRESHOLD = 0.55
 
 _MIN_LINE_LEN = 40          # morphological open length for grid lines
 _DASH_BRIDGE = 15            # dilation to bridge dashed-line gaps
-_CROP_FRAC = 0.60            # centre-crop fraction to avoid grid lines
-_SAT_THRESHOLD = 50          # minimum saturation to count as "coloured"
+_CROP_FRAC = 0.90            # centre-crop fraction to avoid grid lines
+_SAT_THRESHOLD = 20          # minimum saturation to count as "coloured"
 _COLOUR_FRAC = 0.06          # min fraction of cell area for a seed
 
 _digit_templates: dict[int, list[np.ndarray]] = {}
@@ -427,118 +427,103 @@ def find_seeds(img: np.ndarray, grid: GridInfo) -> list[PatchSeed]:
 # Number detection on seeds
 # ---------------------------------------------------------------------------
 
-def _load_digit_templates() -> dict[int, list[np.ndarray]]:
-    """Load digit templates from templates directory.
+def _load_template_binary(path: Path) -> np.ndarray:
+    """Load a saved template PNG and return it as a clean binary at TEMPLATE_SIZE.
 
-    Naming: <digit>.png or <digit>_<NNN>.png
+    Templates are saved as binary masks (0/255). We resize first — which
+    introduces intermediate values via cubic interpolation — then re-threshold
+    to restore clean binary. This matches what _preprocess_roi_for_shape /
+    _preprocess_roi_for_digit produce (also resized then compared as-is).
     """
+    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+    resized = cv2.resize(img, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
+    _, binary = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
+    return binary
+
+
+def _load_digit_templates() -> dict[int, list[np.ndarray]]:
+    """Load digit templates. Naming: <digit>.png or <digit>_<NNN>.png"""
     if _digit_templates:
         return _digit_templates
     for path in sorted(TEMPLATE_DIR.glob("*.png")):
-        stem = path.stem
-        digit_str = stem.split("_", 1)[0]
+        digit_str = path.stem.split("_", 1)[0]
         if not digit_str.isdigit():
             continue
         n = int(digit_str)
         if not 1 <= n <= 9:
             continue
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            continue
-        _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        resized = cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
-        _digit_templates.setdefault(n, []).append(resized)
+        tmpl = _load_template_binary(path)
+        if tmpl is not None:
+            _digit_templates.setdefault(n, []).append(tmpl)
     return _digit_templates
 
 
 def _load_shape_templates() -> dict[str, list[np.ndarray]]:
-    """Load shape templates from templates directory.
-
-    Naming: <shape>.png or <shape>_<NNN>.png where shape in {wide, tall, square, any}
-    """
+    """Load shape templates. Naming: <shape>.png or <shape>_<NNN>.png"""
     if _shape_templates:
         return _shape_templates
     for path in sorted(TEMPLATE_DIR.glob("*.png")):
-        stem = path.stem
-        shape_name = stem.split("_", 1)[0]
+        shape_name = path.stem.split("_", 1)[0]
         if shape_name not in _SHAPE_TYPES:
             continue
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            continue
-        _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        resized = cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
-        _shape_templates.setdefault(shape_name, []).append(resized)
+        tmpl = _load_template_binary(path)
+        if tmpl is not None:
+            _shape_templates.setdefault(shape_name, []).append(tmpl)
     return _shape_templates
 
 
-def _preprocess_roi_for_digit(roi: np.ndarray) -> np.ndarray:
-    """Convert a cell ROI to binary for digit template matching.
+def _sat_mask_and_holes(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return (sat_mask, holes) for a seed ROI.
 
-    Seeds with numbers show white text on a coloured background.
-    We isolate the white channel: high value, low saturation.
+    sat_mask — 255 where the seed color is, 0 for background and number gaps.
+    holes    — 255 only for interior low-saturation regions enclosed by the
+               seed blob (i.e. the white number pixels).  0 everywhere else.
     """
-    if len(roi.shape) == 3:
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        # White text: low saturation, high value
-        white_mask = cv2.inRange(hsv, np.array([0, 0, 180]), np.array([180, 80, 255]))
-        # Also try simple grayscale threshold
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        _, simple = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV) if len(roi.shape) == 3 else \
+          cv2.cvtColor(cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2HSV)
 
-        # Use whichever has more contrast
-        if white_mask.sum() > 0:
-            binary = white_mask
-        else:
-            binary = simple
-    else:
-        _, binary = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    sat_mask = (hsv[:, :, 1] > _SAT_THRESHOLD).astype(np.uint8) * 255
 
-    return cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
+    h, w = sat_mask.shape
+    inv = cv2.bitwise_not(sat_mask)
+    ff = inv.copy()
+    ff_mask = np.zeros((h + 2, w + 2), np.uint8)
+    cv2.floodFill(ff, ff_mask, (0, 0), 0)
+    # ff now contains only pixels that were enclosed by the seed blob
+    holes = ff
+
+    return sat_mask, holes
+
+
+def _to_template_binary(mask: np.ndarray) -> np.ndarray:
+    """Resize a binary mask to TEMPLATE_SIZE and re-threshold to clean binary."""
+    resized = cv2.resize(mask, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
+    _, binary = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
+    return binary
 
 
 def _preprocess_roi_for_shape(roi: np.ndarray) -> np.ndarray:
-    """Convert a seed ROI to binary for shape template matching.
-
-    Key step: Fill white numbers (text) with the seed color to prevent them
-    from creating false edges that confuse shape matching.
-    """
+    """Solid shape silhouette: sat_mask with number holes filled in."""
     if roi.size == 0:
         return np.zeros(TEMPLATE_SIZE, dtype=np.uint8)
+    sat_mask, holes = _sat_mask_and_holes(roi)
+    filled = cv2.bitwise_or(sat_mask, holes)
+    return _to_template_binary(filled)
 
-    if len(roi.shape) == 3:
-        roi_copy = roi.copy()
-        hsv = cv2.cvtColor(roi_copy, cv2.COLOR_BGR2HSV)
 
-        # Detect white text: low saturation, high value
-        white_mask = cv2.inRange(hsv, np.array([0, 0, 180]), np.array([180, 80, 255]))
+def _preprocess_roi_for_digit(roi: np.ndarray) -> np.ndarray | None:
+    """Number silhouette only: just the interior holes from the seed blob.
 
-        if white_mask.sum() > 0:
-            # Dilate white regions slightly to fill gaps in letters
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-            white_dilated = cv2.dilate(white_mask, kernel, iterations=1)
-
-            # Get dominant seed color from non-white regions
-            # Sample the center of the ROI (likely to be pure seed color)
-            cy, cx = roi_copy.shape[0] // 2, roi_copy.shape[1] // 2
-            h_start, h_end = max(0, cy - 5), min(roi_copy.shape[0], cy + 5)
-            w_start, w_end = max(0, cx - 5), min(roi_copy.shape[1], cx + 5)
-            center_sample = roi_copy[h_start:h_end, w_start:w_end]
-
-            if center_sample.size > 0:
-                # Get median color from center (most likely pure seed)
-                seed_color = np.median(center_sample, axis=(0, 1)).astype(np.uint8)
-                # Fill white regions with seed color
-                for i in range(3):
-                    roi_copy[white_dilated > 0, i] = seed_color[i]
-
-        # Convert to grayscale and apply Otsu threshold
-        gray = cv2.cvtColor(roi_copy, cv2.COLOR_BGR2GRAY)
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    else:
-        _, binary = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    return cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
+    Returns None when no enclosed holes exist (seed has no number).
+    """
+    if roi.size == 0:
+        return None
+    _, holes = _sat_mask_and_holes(roi)
+    if holes.sum() == 0:
+        return None
+    return _to_template_binary(holes)
 
 
 def _score_shape_templates(roi_processed: np.ndarray) -> dict[str, float]:
@@ -563,6 +548,9 @@ def _detect_number(roi: np.ndarray) -> int:
         return 0
 
     processed = _preprocess_roi_for_digit(roi)
+    if processed is None:
+        return 0
+
     best_num = 0
     best_score = -1.0
 
@@ -583,7 +571,7 @@ def read_seed_numbers(img: np.ndarray, grid: GridInfo,
     """Update each seed's .size by reading the digit in its cell."""
     crop = img[grid.y: grid.y + grid.height, grid.x: grid.x + grid.width]
     for seed in seeds:
-        roi = _cell_roi(crop, grid, seed.row, seed.col, frac=0.55)
+        roi = _cell_roi(crop, grid, seed.row, seed.col, frac=_CROP_FRAC)
         num = _detect_number(roi)
         if num > 0:
             seed.size = num

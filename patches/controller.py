@@ -37,18 +37,25 @@ _MOUSEEVENTF_ABSOLUTE = 0x8000
 # Mouse helpers
 # ---------------------------------------------------------------------------
 
+_SCREEN_W = _user32.GetSystemMetrics(0)
+_SCREEN_H = _user32.GetSystemMetrics(1)
+
+
 def _move(x: int, y: int) -> None:
-    screen_w = _user32.GetSystemMetrics(0)
-    screen_h = _user32.GetSystemMetrics(1)
-    nx = int(x * 65535 / screen_w)
-    ny = int(y * 65535 / screen_h)
+    nx = int(x * 65535 / _SCREEN_W)
+    ny = int(y * 65535 / _SCREEN_H)
     _user32.mouse_event(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, nx, ny, 0, 0)
 
 
-def _click(x: int, y: int) -> None:
-    _move(x, y)
+def _drag_through(points: list[tuple[int, int]], delay: float = 0.0) -> None:
+    """Mousedown at first point, move through each subsequent point, mouseup."""
+    _move(*points[0])
     _user32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    _user32.mouse_event(_MOUSEEVENTF_LEFTUP,   0, 0, 0, 0)
+    for x, y in points[1:]:
+        if delay > 0:
+            time.sleep(delay)
+        _move(x, y)
+    _user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
 def _aborted() -> bool:
@@ -72,40 +79,36 @@ def execute_solution(
     grid:       GridInfo,
     seeds:      list[PatchSeed],
     solution:   list[list[int]],
-    cell_delay: float = 0.08,
+    move_delay: float = 0.08,
     countdown:  int   = 3,
 ) -> None:
-    """Click every non-seed cell to realise the solved layout on screen.
+    """Execute the solution by dragging between opposing corners of each shape.
 
-    Cells are visited shape-by-shape (in seed order), top-left to bottom-right
-    within each shape, so the browser has an unambiguous assignment sequence.
-    Seed cells are skipped — they are already present on the board.
+    For each seed's patch, find the bounding rectangle of all cells assigned
+    to it, then drag from the top-left pixel corner to the bottom-right pixel
+    corner.  The game associates the dragged rectangle with the seed inside it.
 
     Args:
-        grid:        Detected grid (screen coordinates).
-        seeds:       Seed list from board_vision.
-        solution:    2-D grid[r][c] = seed index from solver.
-        cell_delay:  Pause between individual cell clicks (seconds).
-        countdown:   Seconds before execution begins.
+        grid:         Detected grid (screen coordinates).
+        seeds:        Seed list from board_vision.
+        solution:     2-D grid[r][c] = seed index from solver.
+        shape_delay:  Pause between shapes (seconds).
+        countdown:    Seconds before execution begins.
     """
     rows = len(solution)
     cols = len(solution[0]) if rows else 0
-    seed_positions = {(s.row, s.col) for s in seeds}
 
-    # Build per-shape click lists (exclude the seed cell itself)
-    shape_actions: dict[int, list[tuple[int, int]]] = {}
+    # Collect all cells per shape index
+    shape_cells: dict[int, list[tuple[int, int]]] = {}
     for r in range(rows):
         for c in range(cols):
             si = solution[r][c]
             if si == EMPTY:
                 continue
-            if (r, c) in seed_positions:
-                continue  # already placed
-            shape_actions.setdefault(si, []).append((r, c))
+            shape_cells.setdefault(si, []).append((r, c))
 
-    total_clicks = sum(len(v) for v in shape_actions.values())
-    if total_clicks == 0:
-        print("No empty cells to fill.")
+    if not shape_cells:
+        print("No shapes to draw.")
         return
 
     print(f"Starting in {countdown}s — switch to the browser now ...")
@@ -113,18 +116,25 @@ def execute_solution(
         print(f"  {i}...")
         time.sleep(1)
 
-    for si in sorted(shape_actions):
+    for si in sorted(shape_cells):
+        if _aborted():
+            print("Aborted: mouse moved to top-left corner.")
+            return
+
         seed = seeds[si]
+        cells = shape_cells[si]
+
+        min_r = min(r for r, _ in cells)
+        min_c = min(c for _, c in cells)
+        max_r = max(r for r, _ in cells)
+        max_c = max(c for _, c in cells)
+
         print(f"  Shape {si} (row={seed.row}, col={seed.col}, "
-              f"size={seed.size}, type={seed.shape_type})")
-        for r, c in shape_actions[si]:
-            if _aborted():
-                print("Aborted: mouse moved to top-left corner.")
-                return
-            x, y = _cell_center(grid, r, c)
-            _click(x, y)
-            if cell_delay > 0:
-                time.sleep(cell_delay)
+              f"size={seed.size}, type={seed.shape_type}) "
+              f"bbox rows {min_r}-{max_r} cols {min_c}-{max_c}")
+
+        points = [_cell_center(grid, r, c) for r, c in sorted(cells)]
+        _drag_through(points, delay=move_delay)
 
     print("Done.")
 
@@ -183,5 +193,5 @@ if __name__ == "__main__":
 
     if not args.solve_only:
         execute_solution(grid, seeds, result,
-                         cell_delay=args.countdown,
+                         move_delay=args.delay,
                          countdown=args.countdown)
