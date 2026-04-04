@@ -5,7 +5,7 @@ import json
 from groq import Groq
 
 
-def _call_llm(prompt: str,model: str, temperature: float = 0.3,max_tokens = 700 ) -> str:
+def _call_llm(prompt: str,model: str, temperature: float = 0.3,max_tokens = 7500, effort = "medium") -> str:
     """Send a prompt to the Groq LLM and return the raw response text.
     """
     api_key = os.environ.get("GROQ_API_KEY")
@@ -27,6 +27,7 @@ def _call_llm(prompt: str,model: str, temperature: float = 0.3,max_tokens = 700 
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_completion_tokens=max_tokens,
+            reasoning_effort=effort,
             include_reasoning=False,
             temperature=temperature
         )
@@ -86,7 +87,6 @@ Instructions:
 
 Output format:
 {{
-  "reasoning": "brief explanation of your solving process",
   "ladder": [
     {{"row": <row_index>, "word": "<WORD>"}},
     ...
@@ -148,7 +148,7 @@ the clue.
 Output ONLY JSON:
 {{"top": "<WORD>", "bottom": "<WORD>"}}"""
 
-    raw = _call_llm(prompt,"llama-3.3-70b-versatile", temperature=0.2, max_tokens= 10000)
+    raw = _call_llm(prompt,"openai/gpt-oss-120b", temperature=0.2)
     print(f"--- RAW ENDPOINT RESPONSE ---\n{raw}\n--- END ---")
     data = _parse_json(raw)
 

@@ -257,7 +257,7 @@ def detect_board(img: np.ndarray | None = None,
     # the narrow clue-text dropdown.  Inset horizontally to avoid the
     # side arrows / decorations.
     clue_y1 = scan_y2 + 80
-    clue_y2 = min(img.shape[0], clue_y1 + 80)
+    clue_y2 = min(img.shape[0], clue_y1 + 150)
     clue_region = (row_x, clue_y1,
                    row_w, clue_y2 - clue_y1)
 
