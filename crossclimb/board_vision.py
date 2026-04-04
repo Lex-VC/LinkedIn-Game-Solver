@@ -337,9 +337,8 @@ def detect_board(screen: np.ndarray | None = None,
     # side arrows / decorations.
     clue_y1 = scan_y2 + 80
     clue_y2 = min(screen.shape[0], clue_y1 + 80)
-    clue_margin = int(row_w * 0.10)
-    clue_region = (row_x + clue_margin, clue_y1,
-                   row_w - 2 * clue_margin, clue_y2 - clue_y1)
+    clue_region = (row_x, clue_y1,
+                   row_w, clue_y2 - clue_y1)
 
     board = BoardInfo(rows, word_length, clue_region)
 

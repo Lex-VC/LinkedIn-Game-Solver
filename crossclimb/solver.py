@@ -15,29 +15,20 @@ def _call_llm(prompt: str, temperature: float = 0.3) -> str:
         )
     client = Groq(api_key=api_key)
     response = client.chat.completions.create(
-        model="qwen/qwen3-32b",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
+        max_completion_tokens=8000,
+        include_reasoning=False,
+        reasoning_effort="medium",
+        temperature=temperature
     )
-    msg = response.choices[0].message
-    # qwen puts reasoning in a separate field; the answer is in .content
-    content = msg.content or ""
-    # If content is empty, check for reasoning field as fallback
-    if not content.strip():
-        reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None) or ""
-        print(f"  [debug] content was empty, reasoning length={len(reasoning)}")
-        content = reasoning
-    return content.strip()
+    return (response.choices[0].message.content or "").strip()
 
 
 def _parse_json(raw: str) -> dict:
-    """Extract and parse JSON from an LLM response that may contain markdown
-    or <think> tags."""
+    """Extract and parse JSON from an LLM response that may contain markdown."""
     import re
     text = raw
-
-    # Strip <think>…</think> blocks (qwen reasoning)
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
     # Strip markdown fences
     if "```json" in text:
@@ -96,7 +87,7 @@ Output format:
 
 The "ladder" array must list entries from the TOP of the ladder to the BOTTOM,
 so that ladder[i] and ladder[i+1] differ by exactly one letter.
-Output ONLY the JSON object — no markdown fences, no commentary. /no_think"""
+Output ONLY the JSON object — no markdown fences, no commentary."""
 
     raw = _call_llm(prompt, temperature=0.3)
     print(f"--- RAW LLM RESPONSE ---\n{raw}\n--- END ---")
@@ -118,29 +109,41 @@ Output ONLY the JSON object — no markdown fences, no commentary. /no_think"""
     return result
 
 
-def solve_endpoint(clue: str, word_length: int,
-                   adjacent_word: str) -> str:
-    """Solve a locked-row clue constrained by the adjacent ladder word.
+def solve_endpoints(clue: str, word_length: int,
+                    top_adjacent: str, bottom_adjacent: str) -> tuple[str, str]:
+    """Solve both locked endpoint rows from a single shared clue.
 
-    The answer must differ from *adjacent_word* by exactly one letter.
+    The clue describes a two-word phrase where one word is the top locked row
+    and the other is the bottom locked row (order may be swapped).
+    Each answer must differ from its adjacent ladder word by exactly one letter.
 
     Returns:
-        The answer word in uppercase.
+        (top_word, bottom_word) both in uppercase.
     """
-    prompt = f"""Solve this word puzzle clue. The answer is a common English \
-word of exactly {word_length} letters.
+    prompt = f"""You are solving the final step of a LinkedIn Crossclimb puzzle.
+
+The top and bottom locked rows each need a {word_length}-letter word.
+The clue describes how the two words relate to each other.
 
 Clue: "{clue}"
 
-CRITICAL CONSTRAINT: The answer must differ from "{adjacent_word}" by exactly \
-ONE letter (change one letter, keep all other positions the same).
+CRITICAL CONSTRAINTS:
+- The TOP word must differ from "{top_adjacent}" by exactly ONE letter \
+(change one letter, keep all other positions the same).
+- The BOTTOM word must differ from "{bottom_adjacent}" by exactly ONE letter.
+- The two words must satisfy the relationship described in the clue.
 
-Think about which single-letter changes to "{adjacent_word}" produce real \
-words, then pick the one that matches the clue.
+Think about which single-letter changes to "{top_adjacent}" and \
+"{bottom_adjacent}" produce real words, then find the pair that matches \
+the clue.
 
-Reply with ONLY the answer word — nothing else. /no_think"""
+Output ONLY JSON:
+{{"top": "<WORD>", "bottom": "<WORD>"}}"""
 
     raw = _call_llm(prompt, temperature=0.2)
-    # Take the first word-like token
-    word = raw.split()[0].strip('"\'.,!()').upper()
-    return word
+    print(f"--- RAW ENDPOINT RESPONSE ---\n{raw}\n--- END ---")
+    data = _parse_json(raw)
+
+    top_word = data["top"].strip().upper()
+    bottom_word = data["bottom"].strip().upper()
+    return top_word, bottom_word
