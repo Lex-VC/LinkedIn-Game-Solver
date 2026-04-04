@@ -76,7 +76,7 @@ if __name__ == "__main__":
     sys.path.insert(0, ".")
 
     parser = argparse.ArgumentParser(description="Solve and execute a LinkedIn Zip puzzle.")
-    parser.add_argument("--delay",     type=float, default=0.04,
+    parser.add_argument("--delay",     type=float, default=0.06,
                         help="Seconds between each cell move (default: 0.02)")
     parser.add_argument("--countdown", type=int,   default=3,
                         help="Seconds to wait before executing so you can focus the browser (default: 3)")

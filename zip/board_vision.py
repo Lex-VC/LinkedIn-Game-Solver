@@ -25,17 +25,28 @@ def _augment_template(img: np.ndarray, shift: int = 4, step: int = 2) -> list[np
 
 def _load_templates() -> dict[int, list[np.ndarray]]:
     """Load and preprocess number templates from the templates directory.
-    Files must be named by their number: 1.png, 2.png, ... 16.png
+
+    Supports two naming conventions:
+      - Single sample:  <number>.png          (e.g. 3.png)
+      - Multi sample:   <number>_<NNN>.png    (e.g. 3_001.png, 3_002.png)
+    All samples for the same number are collected; augmented variants from
+    every sample are merged into a single list.
     """
     if _templates:
         return _templates
-    for path in TEMPLATE_DIR.glob("*.png"):
-        if path.stem.isdigit():
-            img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-            if img is not None:
-                _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                resized = cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
-                _templates[int(path.stem)] = _augment_template(resized)
+    for path in sorted(TEMPLATE_DIR.glob("*.png")):
+        digit_str = path.stem.split("_", 1)[0]
+        if not digit_str.isdigit():
+            continue
+        n = int(digit_str)
+        if n < 1:
+            continue
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+        _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        resized = cv2.resize(binary, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
+        _templates.setdefault(n, []).extend(_augment_template(resized))
     return _templates
 
 
