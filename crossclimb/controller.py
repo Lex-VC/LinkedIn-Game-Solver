@@ -81,7 +81,7 @@ def _press_enter() -> None:
 def _drag(from_x: int, from_y: int,
           to_x: int, to_y: int,
           duration: float = 0.5,
-          overshoot: int = 20) -> None:
+          overshoot: int = 30) -> None:
     """Smooth drag from (from_x, from_y) to (to_x, to_y) with overshoot.
 
     Overshoots past the target in the drag direction so the drop registers,

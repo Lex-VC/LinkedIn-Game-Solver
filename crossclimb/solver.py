@@ -5,8 +5,18 @@ import json
 from groq import Groq
 
 
+_MODELS = [
+    ("openai/gpt-oss-120b", 6000),
+    ("openai/gpt-oss-20b",  6000),
+]
+
+
 def _call_llm(prompt: str, temperature: float = 0.3) -> str:
-    """Send a prompt to the Groq LLM and return the raw response text."""
+    """Send a prompt to the Groq LLM and return the raw response text.
+
+    Tries the primary model first; falls back to a smaller model on token
+    limit errors (HTTP 413 / rate_limit_exceeded).
+    """
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -14,15 +24,28 @@ def _call_llm(prompt: str, temperature: float = 0.3) -> str:
             "Get one at https://console.groq.com/keys"
         )
     client = Groq(api_key=api_key)
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[{"role": "user", "content": prompt}],
-        max_completion_tokens=8000,
-        include_reasoning=False,
-        reasoning_effort="medium",
-        temperature=temperature
-    )
-    return (response.choices[0].message.content or "").strip()
+
+    last_err = None
+    for model, max_tokens in _MODELS:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_completion_tokens=max_tokens,
+                include_reasoning=False,
+                reasoning_effort="medium",
+                temperature=temperature,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception as e:
+            err_str = str(e)
+            if "413" in err_str or "rate_limit" in err_str or "tokens" in err_str:
+                print(f"  Token limit hit on {model}, falling back...")
+                last_err = e
+                continue
+            raise
+
+    raise last_err
 
 
 def _parse_json(raw: str) -> dict:
