@@ -1,6 +1,10 @@
-import mss
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import cv2
+import screen
 
 # Minimum line length (px) for morphological open in grid detection.
 _MIN_LINE_LEN = 25
@@ -33,14 +37,6 @@ class QueensBoard:
         self.regions = regions  # regions[r][c] = region_id (0-based)
 
 
-# ---------------------------------------------------------------------------
-# Screen capture
-# ---------------------------------------------------------------------------
-
-def capture_screen() -> np.ndarray:
-    with mss.mss() as sct:
-        shot = sct.grab(sct.monitors[1])
-        return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +268,7 @@ def draw_debug(img: np.ndarray, board: QueensBoard) -> np.ndarray:
 
 def detect_board(debug: bool = False) -> QueensBoard | None:
     print("Capturing screen...")
-    img = capture_screen()
+    img = screen.capture()
 
     print("Detecting grid...")
     grid = find_grid(img)
@@ -302,4 +298,5 @@ def detect_board(debug: bool = False) -> QueensBoard | None:
 
 
 if __name__ == "__main__":
+    screen.init_game_region()
     detect_board(debug=True)

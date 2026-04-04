@@ -67,8 +67,11 @@ def print_board(board: Board, original: Board | None = None) -> None:
 if __name__ == "__main__":
     import sys
     import copy
-    sys.path.insert(0, ".")
-    from board_vision import detect_board
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import screen
+    screen.init_game_region()
+    from sudoku.board_vision import detect_board
 
     grid, board = detect_board(debug=False)
     if grid is None:

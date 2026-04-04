@@ -7,10 +7,13 @@ import ctypes
 import ctypes.wintypes
 import sys
 import argparse
+from pathlib import Path
 
-sys.path.insert(0, ".")
-from board_vision import GridInfo, detect_board
-from solver import solve, print_board
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from queens.board_vision import GridInfo, detect_board
+from queens.solver import solve, print_board
+import screen
 
 _user32 = ctypes.windll.user32
 _MOUSEEVENTF_MOVE     = 0x0001
@@ -22,10 +25,11 @@ _QUEEN_CLICKS = 2  # 1st click = X mark, 2nd click = queen
 
 
 def _move(x: int, y: int) -> None:
+    ox, oy = screen.game_offset()
     screen_w = _user32.GetSystemMetrics(0)
     screen_h = _user32.GetSystemMetrics(1)
-    nx = int(x * 65535 / screen_w)
-    ny = int(y * 65535 / screen_h)
+    nx = int((x + ox) * 65535 / screen_w)
+    ny = int((y + oy) * 65535 / screen_h)
     _user32.mouse_event(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, nx, ny, 0, 0)
 
 
@@ -78,6 +82,30 @@ def execute_solution(
     print("Done.")
 
 
+def run_queens(countdown: int = 3, delay: float = 0.10,
+               debug: bool = False) -> bool:
+    """Detect, solve, and execute the Queens puzzle. Returns True on success."""
+    board_obj = detect_board(debug=debug)
+    if board_obj is None:
+        print("Could not detect board.")
+        return False
+
+    print("\nSolving...")
+    result = solve(board_obj.regions)
+
+    if result is None:
+        print("No solution found.")
+        return False
+
+    print("Solution:")
+    print_board(board_obj.regions, result)
+    print(f"\nQueens: {result}")
+
+    execute_solution(board_obj.grid, result,
+                     cell_delay=delay, countdown=countdown)
+    return True
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Solve and execute a LinkedIn Queens puzzle.")
     parser.add_argument("--delay",     type=float, default=0.10,
@@ -88,21 +116,5 @@ if __name__ == "__main__":
                         help="Show debug windows with detected grid and regions")
     args = parser.parse_args()
 
-    board_obj = detect_board(debug=args.debug)
-    if board_obj is None:
-        print("Could not detect board.")
-        sys.exit(1)
-
-    print("\nSolving...")
-    result = solve(board_obj.regions)
-
-    if result is None:
-        print("No solution found.")
-        sys.exit(1)
-
-    print("Solution:")
-    print_board(board_obj.regions, result)
-    print(f"\nQueens: {result}")
-
-    execute_solution(board_obj.grid, result,
-                     cell_delay=args.delay, countdown=args.countdown)
+    screen.init_game_region()
+    run_queens(countdown=args.countdown, delay=args.delay, debug=args.debug)

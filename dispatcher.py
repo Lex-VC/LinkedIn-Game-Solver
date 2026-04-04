@@ -4,12 +4,13 @@ Usage:
   python dispatcher.py [--countdown N] [--pause N]
 
 Flow for each game:
-  1. Ctrl+L → type the game URL → Enter  (navigate browser)
+  1. Ctrl+L -> type the game URL -> Enter  (navigate browser)
   2. Wait for the page to load
-  3. Run the game's controller.py as a subprocess
-  4. Wait --pause seconds before the next game (default: 5)
+  3. Detect the game region (white card)
+  4. Run the game's controller directly
+  5. Wait --pause seconds before the next game (default: 5)
 
-If any game fails (non-zero exit, timeout, exception) it is skipped.
+If any game fails (exception, detection failure) it is skipped.
 
 Safety:
   Move the mouse to the top-left corner of the screen (<=5 px) to abort.
@@ -18,10 +19,24 @@ Safety:
 import argparse
 import ctypes
 import ctypes.wintypes
-import subprocess
 import sys
 import time
 import os
+from pathlib import Path
+
+# Ensure project root is on sys.path for package imports
+_ROOT = str(Path(__file__).resolve().parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+import screen
+from patches.controller import run_patches
+from zip.controller import run_zip
+from sudoku.controller import run_sudoku
+from tango.controller import run_tango
+from queens.controller import run_queens
+from pinpoint.controller import run_pinpoint
+from crossclimb.controller import run_crossclimb
 
 _user32 = ctypes.windll.user32
 _KEYEVENTF_KEYUP = 0x0002
@@ -30,15 +45,15 @@ _VK_RETURN  = 0x0D
 _MOUSEEVENTF_MOVE     = 0x0001
 _MOUSEEVENTF_ABSOLUTE = 0x8000
 
-# Game definitions: (url, subdirectory containing controller.py)
+# Game definitions: (url, display name, runner function)
 GAMES = [
-    ("https://www.linkedin.com/games/patches/",      "patches"),
-    ("https://www.linkedin.com/games/zip/",           "zip"),
-    ("https://www.linkedin.com/games/mini-sudoku/",   "sudoku"),
-    ("https://www.linkedin.com/games/tango/",         "tango"),
-    ("https://www.linkedin.com/games/queens/",        "queens"),
-    ("https://www.linkedin.com/games/pinpoint/",      "pinpoint"),
-    ("https://www.linkedin.com/games/crossclimb/",    "crossclimb"),
+    ("https://www.linkedin.com/games/patches/",      "patches",    run_patches),
+    ("https://www.linkedin.com/games/zip/",           "zip",        run_zip),
+    ("https://www.linkedin.com/games/mini-sudoku/",   "sudoku",     run_sudoku),
+    ("https://www.linkedin.com/games/tango/",         "tango",      run_tango),
+    ("https://www.linkedin.com/games/queens/",        "queens",     run_queens),
+    ("https://www.linkedin.com/games/pinpoint/",      "pinpoint",   run_pinpoint),
+    ("https://www.linkedin.com/games/crossclimb/",    "crossclimb", run_crossclimb),
 ]
 
 # ---------- keyboard helpers ----------
@@ -113,26 +128,12 @@ def navigate_to(url: str, load_wait: float = 6.0) -> None:
     time.sleep(load_wait)
 
 
-def run_game(subdir: str, timeout: float = 120.0) -> bool:
-    """Run the controller.py for a game. Returns True on success."""
-    controller = os.path.join(os.path.dirname(os.path.abspath(__file__)), subdir, "controller.py")
-    if not os.path.isfile(controller):
-        print(f"  Controller not found: {controller}")
-        return False
-
-    game_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), subdir)
+def run_game(name: str, runner, countdown: int = 3) -> bool:
+    """Run a game's controller function. Returns True on success."""
     try:
-        result = subprocess.run(
-            [sys.executable, "controller.py", "--countdown", "3"],
-            cwd=game_dir,
-            timeout=timeout,
-        )
-        return result.returncode == 0
-    except subprocess.TimeoutExpired:
-        print(f"  Timed out after {timeout:.0f}s")
-        return False
+        return runner(countdown=countdown)
     except Exception as e:
-        print(f"  Error: {e}")
+        print(f"  Error running {name}: {e}")
         return False
 
 
@@ -144,8 +145,8 @@ def main() -> None:
                         help="Seconds to wait between games (default: 5)")
     parser.add_argument("--load-wait", type=float, default=6.0,
                         help="Seconds to wait for page load after navigating (default: 6)")
-    parser.add_argument("--timeout", type=float, default=120.0,
-                        help="Max seconds per game before skipping (default: 120)")
+    parser.add_argument("--game-countdown", type=int, default=3,
+                        help="Countdown passed to each game controller (default: 3)")
     args = parser.parse_args()
 
     print(f"=== LinkedIn Game Dispatcher ===")
@@ -161,12 +162,12 @@ def main() -> None:
 
     results = {}
 
-    for idx, (url, subdir) in enumerate(GAMES, 1):
+    for idx, (url, name, runner) in enumerate(GAMES, 1):
         if _check_abort():
             print("\nAborted (mouse in corner).")
             break
 
-        print(f"\n[{idx}/{len(GAMES)}] {subdir.upper()}")
+        print(f"\n[{idx}/{len(GAMES)}] {name.upper()}")
         print(f"  Navigating to {url}")
         navigate_to(url, load_wait=args.load_wait)
 
@@ -175,15 +176,21 @@ def main() -> None:
             break
 
         _park_mouse()
+
+        # Detect the game region for this game
+        print(f"  Detecting game region...")
+        screen.reset_game_region()
+        screen.init_game_region()
+
         print(f"  Running solver...")
-        success = run_game(subdir, timeout=args.timeout)
+        success = run_game(name, runner, countdown=args.game_countdown)
 
         if success:
-            print(f"  {subdir.upper()} completed successfully!")
-            results[subdir] = "OK"
+            print(f"  {name.upper()} completed successfully!")
+            results[name] = "OK"
         else:
-            print(f"  {subdir.upper()} failed — skipping.")
-            results[subdir] = "FAILED"
+            print(f"  {name.upper()} failed — skipping.")
+            results[name] = "FAILED"
 
         # Wait between games (except after the last one)
         if idx < len(GAMES):
@@ -192,10 +199,10 @@ def main() -> None:
 
     # Summary
     print("\n=== Results ===")
-    for subdir in [g[1] for g in GAMES]:
-        status = results.get(subdir, "SKIPPED")
+    for _, name, _ in GAMES:
+        status = results.get(name, "SKIPPED")
         marker = "+" if status == "OK" else "-"
-        print(f"  [{marker}] {subdir:12s} {status}")
+        print(f"  [{marker}] {name:12s} {status}")
 
     ok = sum(1 for v in results.values() if v == "OK")
     print(f"\n{ok}/{len(GAMES)} games completed successfully.")

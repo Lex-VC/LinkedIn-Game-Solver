@@ -1,7 +1,10 @@
-import mss
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import cv2
-from pathlib import Path
+import screen
 
 SUN = 'sun'
 MOON = 'moon'
@@ -62,14 +65,6 @@ class TangoBoard:
         self.v_constraints = v_constraints  # (r, c): constraint on edge right of col c at row r
 
 
-# ---------------------------------------------------------------------------
-# Screen capture
-# ---------------------------------------------------------------------------
-
-def capture_screen() -> np.ndarray:
-    with mss.mss() as sct:
-        shot = sct.grab(sct.monitors[1])
-        return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +460,7 @@ def draw_grid_detection(img: np.ndarray) -> np.ndarray:
 
 def detect_board(debug: bool = False) -> TangoBoard | None:
     print("Capturing screen...")
-    img = capture_screen()
+    img = screen.capture()
 
     print("Detecting grid...")
     grid = find_grid(img)
@@ -500,4 +495,5 @@ def detect_board(debug: bool = False) -> TangoBoard | None:
 
 
 if __name__ == "__main__":
+    screen.init_game_region()
     detect_board(debug=True)

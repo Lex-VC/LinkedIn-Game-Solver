@@ -114,8 +114,11 @@ def print_board(board: Board) -> None:
 if __name__ == "__main__":
     import sys
     import copy
-    sys.path.insert(0, ".")
-    from board_vision import (
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import screen
+    screen.init_game_region()
+    from tango.board_vision import (
         SUN  as V_SUN,
         MOON as V_MOON,
         detect_board,

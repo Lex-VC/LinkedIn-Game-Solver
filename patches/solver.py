@@ -187,8 +187,11 @@ def print_board(grid: Board, seeds: list) -> None:
 
 if __name__ == "__main__":
     import sys
-    sys.path.insert(0, ".")
-    from board_vision import detect_board
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import screen
+    screen.init_game_region()
+    from patches.board_vision import detect_board
 
     board_obj = detect_board(debug=False)
     if board_obj is None:

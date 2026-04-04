@@ -5,10 +5,13 @@ import ctypes
 import ctypes.wintypes
 import sys
 import argparse
+from pathlib import Path
 
-sys.path.insert(0, ".")
-from board_vision import capture_screen, extract_clue_words, find_input_box
-from solver import guess_category
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from pinpoint.board_vision import extract_clue_words, find_input_box
+from pinpoint.solver import guess_category
+import screen
 
 _user32 = ctypes.windll.user32
 _MOUSEEVENTF_MOVE     = 0x0001
@@ -22,10 +25,11 @@ _MAX_ROUNDS = 5
 
 
 def _move(x: int, y: int) -> None:
+    ox, oy = screen.game_offset()
     screen_w = _user32.GetSystemMetrics(0)
     screen_h = _user32.GetSystemMetrics(1)
-    nx = int(x * 65535 / screen_w)
-    ny = int(y * 65535 / screen_h)
+    nx = int((x + ox) * 65535 / screen_w)
+    ny = int((y + oy) * 65535 / screen_h)
     _user32.mouse_event(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, nx, ny, 0, 0)
 
 
@@ -71,7 +75,7 @@ def _aborted() -> bool:
     return pos.x <= 5 and pos.y <= 5
 
 
-def run_pinpoint(countdown: int = 3, debug: bool = False) -> None:
+def run_pinpoint(countdown: int = 3, debug: bool = False) -> bool:
     """Main loop: detect clues, guess, type answer, repeat until correct or out of clues."""
 
     print(f"Starting in {countdown}s — switch to the browser now ...")
@@ -85,13 +89,13 @@ def run_pinpoint(countdown: int = 3, debug: bool = False) -> None:
     for round_num in range(1, _MAX_ROUNDS + 1):
         if _aborted():
             print("Aborted: mouse moved to top-left corner.")
-            return
+            return False
 
         print(f"\n--- Round {round_num} ---")
 
         # Capture and extract clues
-        screen = capture_screen()
-        clues = extract_clue_words(screen)
+        img = screen.capture()
+        clues = extract_clue_words(img)
 
         if not clues:
             print("No clue words detected. Waiting for first clue reveal...")
@@ -101,7 +105,7 @@ def run_pinpoint(countdown: int = 3, debug: bool = False) -> None:
         # Check if new clue appeared (meaning previous guess was wrong)
         if len(clues) == prev_clue_count and round_num > 1:
             print("No new clue appeared — might have won or game ended.")
-            return
+            return True
 
         prev_clue_count = len(clues)
         print(f"Clues so far: {clues}")
@@ -111,10 +115,10 @@ def run_pinpoint(countdown: int = 3, debug: bool = False) -> None:
         print(f"AI guesses: {guess}")
 
         # Find and click the input box
-        input_pos = find_input_box(screen)
+        input_pos = find_input_box(img)
         if input_pos is None:
             print("Could not find input box.")
-            return
+            return False
 
         _click(input_pos[0], input_pos[1])
         time.sleep(0.3)
@@ -134,6 +138,7 @@ def run_pinpoint(countdown: int = 3, debug: bool = False) -> None:
             print("Used all 5 rounds.")
 
     print("\nFinished all rounds.")
+    return True
 
 
 if __name__ == "__main__":
@@ -144,4 +149,5 @@ if __name__ == "__main__":
                         help="Show debug windows")
     args = parser.parse_args()
 
+    screen.init_game_region()
     run_pinpoint(countdown=args.countdown, debug=args.debug)

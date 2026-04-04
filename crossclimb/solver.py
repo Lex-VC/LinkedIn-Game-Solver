@@ -5,17 +5,8 @@ import json
 from groq import Groq
 
 
-_MODELS = [
-    ("openai/gpt-oss-120b", 6000),
-    ("openai/gpt-oss-20b",  6000),
-]
-
-
-def _call_llm(prompt: str, temperature: float = 0.3) -> str:
+def _call_llm(prompt: str,model: str, temperature: float = 0.3,max_tokens = 700 ) -> str:
     """Send a prompt to the Groq LLM and return the raw response text.
-
-    Tries the primary model first; falls back to a smaller model on token
-    limit errors (HTTP 413 / rate_limit_exceeded).
     """
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
@@ -24,28 +15,23 @@ def _call_llm(prompt: str, temperature: float = 0.3) -> str:
             "Get one at https://console.groq.com/keys"
         )
     client = Groq(api_key=api_key)
-
-    last_err = None
-    for model, max_tokens in _MODELS:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_completion_tokens=max_tokens,
-                include_reasoning=False,
-                reasoning_effort="medium",
-                temperature=temperature,
-            )
-            return (response.choices[0].message.content or "").strip()
-        except Exception as e:
-            err_str = str(e)
-            if "413" in err_str or "rate_limit" in err_str or "tokens" in err_str:
-                print(f"  Token limit hit on {model}, falling back...")
-                last_err = e
-                continue
-            raise
-
-    raise last_err
+    if model == "llama-3.3-70b-versatile":
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=max_tokens,
+            temperature=temperature
+        )
+    else:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=max_tokens,
+            include_reasoning=False,
+            temperature=temperature
+        )
+    return (response.choices[0].message.content or "").strip()
+          
 
 
 def _parse_json(raw: str) -> dict:
@@ -71,7 +57,6 @@ def _parse_json(raw: str) -> dict:
 def solve_crossclimb(clues: dict[int, str],
                      word_length: int) -> list[tuple[int, str]]:
     """Solve crossclimb clues and return answers in word-ladder order.
-
     Args:
         clues:       {row_index: clue_text}  (middle rows only).
         word_length: number of letters per word.
@@ -112,7 +97,7 @@ The "ladder" array must list entries from the TOP of the ladder to the BOTTOM,
 so that ladder[i] and ladder[i+1] differ by exactly one letter.
 Output ONLY the JSON object — no markdown fences, no commentary."""
 
-    raw = _call_llm(prompt, temperature=0.3)
+    raw = _call_llm(prompt,"openai/gpt-oss-120b", temperature=0.3)
     print(f"--- RAW LLM RESPONSE ---\n{raw}\n--- END ---")
     data = _parse_json(raw)
 
@@ -163,7 +148,7 @@ the clue.
 Output ONLY JSON:
 {{"top": "<WORD>", "bottom": "<WORD>"}}"""
 
-    raw = _call_llm(prompt, temperature=0.2)
+    raw = _call_llm(prompt,"llama-3.3-70b-versatile", temperature=0.2, max_tokens= 10000)
     print(f"--- RAW ENDPOINT RESPONSE ---\n{raw}\n--- END ---")
     data = _parse_json(raw)
 

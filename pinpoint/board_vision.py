@@ -1,18 +1,15 @@
 """Pinpoint board vision — captures screen and extracts revealed clue words via OCR."""
 
-import ctypes
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import re
 
 import numpy as np
 import cv2
-import mss
 import pytesseract
-
-# Enable DPI awareness so mss captures at full physical resolution
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
-except Exception:
-    pass
+import screen
 
 # HSV range for the blue gradient block
 _BLUE_LO = np.array([100, 30, 120])
@@ -24,13 +21,6 @@ _MIN_BLOCK_WIDTH = 150
 _MIN_BLOCK_HEIGHT = 100
 
 
-def capture_screen() -> np.ndarray:
-    """Grab the primary monitor as a BGR numpy array."""
-    with mss.mss() as sct:
-        mon = sct.monitors[1]
-        shot = sct.grab(mon)
-        img = np.array(shot)
-        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
 
 def _find_gradient_block(screen: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -82,7 +72,7 @@ def extract_clue_words(screen: np.ndarray) -> list[str]:
 
     # White text on blue — threshold to isolate
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+    _, thresh = cv2.threshold(gray, 90, 255, cv2.THRESH_BINARY)
 
     # Upscale for better OCR accuracy if the block is small
     if w < 400:
@@ -97,7 +87,7 @@ def extract_clue_words(screen: np.ndarray) -> list[str]:
         if not line:
             continue
         # Skip unrevealed "CLUE 2", "CLUE 3", etc.
-        if re.match(r"(?i)^clue\s*\d", line):
+        if re.match(r'\b\w*clue\w*\b', line, flags=re.IGNORECASE):
             continue
         clues.append(line)
 
@@ -235,7 +225,7 @@ def detect_board(debug: bool = False) -> list[str] | None:
     When debug=True, shows an annotated window with detection results.
     """
     print("Capturing screen...")
-    img = capture_screen()
+    img = screen.capture()
     print(f"Screenshot size: {img.shape[1]}x{img.shape[0]}")
 
     print("Detecting gradient block...")
@@ -286,4 +276,5 @@ def detect_board(debug: bool = False) -> list[str] | None:
 
 
 if __name__ == "__main__":
+    screen.init_game_region()
     detect_board(debug=True)

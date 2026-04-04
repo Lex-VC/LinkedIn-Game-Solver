@@ -1,6 +1,9 @@
 from collections import deque
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from board_vision import GridInfo, NumberCell, WallSet
+from zip.board_vision import GridInfo, NumberCell, WallSet
 
 
 def _neighbors(r: int, c: int, rows: int, cols: int,
@@ -112,8 +115,11 @@ def print_solution(grid: GridInfo, path: list[tuple[int, int]],
 
 if __name__ == "__main__":
     import sys
-    sys.path.insert(0, ".")
-    from board_vision import detect_board
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import screen
+    screen.init_game_region()
+    from zip.board_vision import detect_board
 
     grid, cells, h_walls, v_walls = detect_board(debug=False)
 

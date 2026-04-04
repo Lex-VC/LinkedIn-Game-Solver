@@ -16,17 +16,14 @@ Detection pipeline:
 """
 from __future__ import annotations
 
-import ctypes
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import cv2
-import mss
 import pytesseract
-
-# DPI awareness for accurate screen capture
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    pass
+import screen
 
 # HSV colour ranges
 _PEACH_LO = np.array([3, 30, 180])
@@ -90,69 +87,6 @@ class BoardInfo:
         return [r for r in self.rows if r.row_type != 'locked']
 
 
-# ---------------------------------------------------------------------------
-# Screen capture
-# ---------------------------------------------------------------------------
-
-def capture_screen() -> np.ndarray:
-    """Grab the primary monitor as a BGR numpy array."""
-    with mss.mss() as sct:
-        shot = sct.grab(sct.monitors[1])
-        return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
-
-
-# ---------------------------------------------------------------------------
-# Game-region localisation (ported from patches/board_vision.py)
-# ---------------------------------------------------------------------------
-
-def _find_game_region(img: np.ndarray) -> tuple[int, int, int, int] | None:
-    """Return (x, y, w, h) of the white game card containing the Crossclimb.
-
-    Strategy:
-      1. Threshold to find near-white pixels (the game card background).
-      2. Keep only large contiguous white blobs.
-      3. Among those, find the one that also contains the most saturated
-         (coloured) pixels — that's the game card with the orange/teal rows.
-    """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, white = cv2.threshold(gray, 235, 255, cv2.THRESH_BINARY)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
-    white_closed = cv2.morphologyEx(white, cv2.MORPH_CLOSE, kernel)
-
-    contours, _ = cv2.findContours(white_closed, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
-
-    img_area = img.shape[0] * img.shape[1]
-    min_area = img_area * 0.01
-
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    sat = hsv[:, :, 1]
-
-    best_region = None
-    best_score = -1.0
-
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        area = w * h
-        if area < min_area:
-            continue
-        ratio = w / h if h > 0 else 0
-        if not (0.3 <= ratio <= 3.0):
-            continue
-
-        roi_sat = sat[y:y + h, x:x + w]
-        sat_count = int((roi_sat > _SAT_THRESHOLD).sum())
-        sat_frac = sat_count / area
-        if sat_frac < 0.002:
-            continue
-
-        score = sat_frac * np.sqrt(area)
-        if score > best_score:
-            best_score = score
-            best_region = (x, y, w, h)
-
-    return best_region
 
 
 # ---------------------------------------------------------------------------
@@ -232,36 +166,23 @@ def _detect_word_length(screen: np.ndarray, row: RowInfo | None) -> int:
 # Board detection (main entry point)
 # ---------------------------------------------------------------------------
 
-def detect_board(screen: np.ndarray | None = None,
+def detect_board(img: np.ndarray | None = None,
                  debug: bool = False) -> BoardInfo | None:
     """Detect the Crossclimb board.
 
     Returns a BoardInfo with all rows, word length, and clue region,
     or None if the board cannot be found.
+
+    Coordinates are relative to the game region (see screen module).
     """
-    if screen is None:
-        screen = capture_screen()
+    if img is None:
+        img = screen.capture()
 
-    # --- 0. Locate the game card on screen ---
-    print("Localising game panel...")
-    region = _find_game_region(screen)
-    if region is None:
-        print("ERROR: Could not find the game card on screen.")
-        return None
-
-    rx, ry, rw, rh = region
-    print(f"  Game region: ({rx},{ry}) {rw}x{rh}px")
-    panel = screen[ry:ry + rh, rx:rx + rw]
-
-    # --- 1. Find locked (orange / peach) bars *inside* the panel ---
-    peach_bars = _find_bars(panel, _PEACH_LO, _PEACH_HI)
+    # --- 1. Find locked (orange / peach) bars ---
+    peach_bars = _find_bars(img, _PEACH_LO, _PEACH_HI)
     if len(peach_bars) < 2:
         print(f"ERROR: Found {len(peach_bars)} locked row(s), need at least 2.")
         return None
-
-    # Convert to screen coordinates
-    peach_bars = [(bx + rx, by + ry, bw, bh)
-                  for bx, by, bw, bh in peach_bars]
 
     top_locked = peach_bars[0]
     bottom_locked = peach_bars[-1]
@@ -274,7 +195,7 @@ def detect_board(screen: np.ndarray | None = None,
     # --- 2. Scan between locked bars with brightness projection ---
     scan_y1 = top_locked[1]
     scan_y2 = bottom_locked[1] + bottom_locked[3]
-    scan = screen[scan_y1:scan_y2, row_x:row_x + row_w]
+    scan = img[scan_y1:scan_y2, row_x:row_x + row_w]
 
     gray = cv2.cvtColor(scan, cv2.COLOR_BGR2GRAY)
     projection = gray.mean(axis=1)
@@ -306,7 +227,7 @@ def detect_board(screen: np.ndarray | None = None,
         return None
 
     # --- 3. Classify each band ---
-    teal_bars = _find_bars(screen, _TEAL_LO, _TEAL_HI)
+    teal_bars = _find_bars(img, _TEAL_LO, _TEAL_HI)
 
     rows: list[RowInfo] = []
     for i, (bs, be) in enumerate(bands):
@@ -329,14 +250,14 @@ def detect_board(screen: np.ndarray | None = None,
 
     # --- 4. Word length ---
     selected = next((r for r in rows if r.row_type == 'selected'), None)
-    word_length = _detect_word_length(screen, selected)
+    word_length = _detect_word_length(img, selected)
 
     # --- 5. Clue region (below the bottom locked bar) ---
     # Skip the "Reveal row | Hint" buttons (~80 px) and only capture
     # the narrow clue-text dropdown.  Inset horizontally to avoid the
     # side arrows / decorations.
     clue_y1 = scan_y2 + 80
-    clue_y2 = min(screen.shape[0], clue_y1 + 80)
+    clue_y2 = min(img.shape[0], clue_y1 + 80)
     clue_region = (row_x, clue_y1,
                    row_w, clue_y2 - clue_y1)
 
@@ -347,7 +268,7 @@ def detect_board(screen: np.ndarray | None = None,
         print(f"  {r}")
 
     if debug:
-        _show_debug(screen, board)
+        _show_debug(img, board)
 
     return board
 
@@ -356,7 +277,7 @@ def detect_board(screen: np.ndarray | None = None,
 # Clue reading (OCR)
 # ---------------------------------------------------------------------------
 
-def read_clue(screen: np.ndarray, board: BoardInfo) -> str | None:
+def read_clue(img: np.ndarray, board: BoardInfo) -> str | None:
     """OCR the clue text shown at the bottom of the game.
 
     Returns the clue string, or None if nothing could be read.
@@ -366,10 +287,10 @@ def read_clue(screen: np.ndarray, board: BoardInfo) -> str | None:
 
     cx, cy, cw, ch = board.clue_region
     cy = max(0, cy)
-    ch = min(ch, screen.shape[0] - cy)
+    ch = min(ch, img.shape[0] - cy)
     cx = max(0, cx)
-    cw = min(cw, screen.shape[1] - cx)
-    roi = screen[cy:cy + ch, cx:cx + cw]
+    cw = min(cw, img.shape[1] - cx)
+    roi = img[cy:cy + ch, cx:cx + cw]
 
     if roi.size == 0:
         return None
@@ -401,8 +322,8 @@ def read_clue(screen: np.ndarray, board: BoardInfo) -> str | None:
 # Debug visualisation
 # ---------------------------------------------------------------------------
 
-def _show_debug(screen: np.ndarray, board: BoardInfo) -> None:
-    dbg = screen.copy()
+def _show_debug(img: np.ndarray, board: BoardInfo) -> None:
+    dbg = img.copy()
     colours = {
         'locked':   (0, 0, 255),
         'selected': (255, 128, 0),
@@ -429,7 +350,7 @@ def _show_debug(screen: np.ndarray, board: BoardInfo) -> None:
 
     cv2.putText(dbg, f"word_length={board.word_length}",
                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 2)
-    sh, sw = screen.shape[:2]
+    sh, sw = img.shape[:2]
     cv2.putText(dbg, f"{sw}x{sh}", (10, 55),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 200), 1)
 
@@ -444,4 +365,5 @@ def _show_debug(screen: np.ndarray, board: BoardInfo) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    screen.init_game_region()
     detect_board(debug=True)

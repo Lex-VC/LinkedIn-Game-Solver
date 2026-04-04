@@ -17,10 +17,13 @@ Detection pipeline:
 """
 from __future__ import annotations
 
-import mss
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import cv2
-from pathlib import Path
+import screen
 
 
 # ---------------------------------------------------------------------------
@@ -83,76 +86,6 @@ class PatchesBoard:
         self.seeds = seeds
 
 
-# ---------------------------------------------------------------------------
-# Screen capture
-# ---------------------------------------------------------------------------
-
-def capture_screen() -> np.ndarray:
-    with mss.mss() as sct:
-        shot = sct.grab(sct.monitors[1])
-        return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
-
-
-# ---------------------------------------------------------------------------
-# Game-region localisation
-# ---------------------------------------------------------------------------
-
-def _find_game_region(img: np.ndarray) -> tuple[int, int, int, int] | None:
-    """Return (x, y, w, h) of the white game card containing the Patches grid.
-
-    Strategy:
-      1. Threshold to find near-white pixels (the game card background).
-      2. Keep only large contiguous white blobs.
-      3. Among those, find the one that also contains the most saturated
-         (coloured) pixels — that's the game card.
-    Returns None if no suitable region is found.
-    """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Near-white: value > 235
-    _, white = cv2.threshold(gray, 235, 255, cv2.THRESH_BINARY)
-
-    # Flood-fill small holes so the card interior is solid white
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
-    white_closed = cv2.morphologyEx(white, cv2.MORPH_CLOSE, kernel)
-
-    contours, _ = cv2.findContours(white_closed, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
-
-    img_area = img.shape[0] * img.shape[1]
-    # Must be at least 1% of screen area to be a game card, not a tooltip
-    min_area = img_area * 0.01
-
-    # Build saturation map once
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    sat = hsv[:, :, 1]
-
-    best_region = None
-    best_score = -1.0
-
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        area = w * h
-        if area < min_area:
-            continue
-        # Aspect ratio: game card is roughly square-ish (0.3 – 3.0)
-        ratio = w / h if h > 0 else 0
-        if not (0.3 <= ratio <= 3.0):
-            continue
-
-        # Count saturated pixels inside this bounding box
-        roi_sat = sat[y:y + h, x:x + w]
-        sat_count = int((roi_sat > _SAT_THRESHOLD).sum())
-        # Score = saturated fraction (want some colour but not a photo/video)
-        sat_frac = sat_count / area
-        if sat_frac < 0.002:
-            continue  # no coloured seeds visible
-
-        score = sat_frac * np.sqrt(area)  # prefer larger regions with colour
-        if score > best_score:
-            best_score = score
-            best_region = (x, y, w, h)
-
-    return best_region
 
 
 # ---------------------------------------------------------------------------
@@ -254,18 +187,13 @@ def _extract_grid_lines(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return h_lines, v_lines
 
 
-def find_grid(img: np.ndarray,
-              region_offset: tuple[int, int] = (0, 0)) -> GridInfo | None:
-    """Detect the grid inside *img* (which may be a crop of the full screen).
-
-    *region_offset* = (ox, oy) is added to all returned coordinates so that
-    GridInfo always stores screen-space positions.
+def find_grid(img: np.ndarray) -> GridInfo | None:
+    """Detect the grid inside *img*.
 
     Strategy: cluster the raw H/V line positions directly (no intersection
     filter) so that UI noise from other parts of the panel does not destroy
     the grid projection.  The best uniform-spacing cluster selects the grid.
     """
-    ox, oy = region_offset
     h_lines, v_lines = _extract_grid_lines(img)
 
     h_raw = _merge_close(_line_positions(h_lines, axis=1))
@@ -334,8 +262,8 @@ def find_grid(img: np.ndarray,
         return None
 
     return GridInfo(
-        x=v_cluster[0] + ox,
-        y=h_cluster[0] + oy,
+        x=v_cluster[0],
+        y=h_cluster[0],
         width=v_cluster[-1] - v_cluster[0],
         height=h_cluster[-1] - h_cluster[0],
         rows=rows,
@@ -689,22 +617,10 @@ def draw_grid_detection(img: np.ndarray) -> np.ndarray:
 
 def detect_board(debug: bool = False) -> PatchesBoard | None:
     print("Capturing screen...")
-    img = capture_screen()
-
-    print("Localising game panel...")
-    region = _find_game_region(img)
-    if region is not None:
-        rx, ry, rw, rh = region
-        print(f"  Game region: ({rx},{ry}) {rw}x{rh}px")
-        panel = img[ry:ry + rh, rx:rx + rw]
-        offset = (rx, ry)
-    else:
-        print("  WARNING: Could not localise game panel — using full screen")
-        panel = img
-        offset = (0, 0)
+    img = screen.capture()
 
     print("Detecting grid...")
-    grid = find_grid(panel, region_offset=offset)
+    grid = find_grid(img)
     if grid is None:
         print("ERROR: Could not find the Patches game grid on screen.")
         return None
@@ -733,4 +649,5 @@ def detect_board(debug: bool = False) -> PatchesBoard | None:
 
 
 if __name__ == "__main__":
+    screen.init_game_region()
     detect_board(debug=True)

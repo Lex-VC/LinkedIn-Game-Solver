@@ -19,10 +19,13 @@ import time
 import ctypes
 import ctypes.wintypes
 import argparse
+from pathlib import Path
 
-sys.path.insert(0, ".")
-from board_vision import PatchesBoard, GridInfo, PatchSeed, detect_board, draw_debug
-from solver import solve, print_board, EMPTY
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from patches.board_vision import PatchesBoard, GridInfo, PatchSeed, detect_board, draw_debug
+from patches.solver import solve, print_board, EMPTY
+import screen
 
 import cv2
 
@@ -42,8 +45,9 @@ _SCREEN_H = _user32.GetSystemMetrics(1)
 
 
 def _move(x: int, y: int) -> None:
-    nx = int(x * 65535 / _SCREEN_W)
-    ny = int(y * 65535 / _SCREEN_H)
+    ox, oy = screen.game_offset()
+    nx = int((x + ox) * 65535 / _SCREEN_W)
+    ny = int((y + oy) * 65535 / _SCREEN_H)
     _user32.mouse_event(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, nx, ny, 0, 0)
 
 
@@ -143,23 +147,13 @@ def execute_solution(
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Solve and execute a LinkedIn Patches puzzle.")
-    parser.add_argument("--delay",     type=float, default=0.08,
-                        help="Seconds between cell clicks (default: 0.08)")
-    parser.add_argument("--countdown", type=int,   default=3,
-                        help="Seconds before execution starts (default: 3)")
-    parser.add_argument("--debug",     action="store_true",
-                        help="Show debug window with detected grid and solution")
-    parser.add_argument("--solve-only", action="store_true",
-                        help="Detect and solve but do not click")
-    args = parser.parse_args()
-
+def run_patches(countdown: int = 3, delay: float = 0.08,
+                debug: bool = False, solve_only: bool = False) -> bool:
+    """Detect, solve, and execute the Patches puzzle. Returns True on success."""
     board_obj = detect_board(debug=False)
     if board_obj is None:
         print("Could not detect board.")
-        sys.exit(1)
+        return False
 
     grid  = board_obj.grid
     seeds = board_obj.seeds
@@ -179,19 +173,37 @@ if __name__ == "__main__":
 
     if result is None:
         print("No solution found.")
-        sys.exit(1)
+        return False
 
     print("Solution:")
     print_board(result, seeds)
 
-    if args.debug:
-        from board_vision import capture_screen
-        img = capture_screen()
+    if debug:
+        img = screen.capture()
         cv2.imshow("Patches — solution", draw_debug(img, board_obj, result))
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
-    if not args.solve_only:
+    if not solve_only:
         execute_solution(grid, seeds, result,
-                         move_delay=args.delay,
-                         countdown=args.countdown)
+                         move_delay=delay,
+                         countdown=countdown)
+    return True
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Solve and execute a LinkedIn Patches puzzle.")
+    parser.add_argument("--delay",     type=float, default=0.08,
+                        help="Seconds between cell clicks (default: 0.08)")
+    parser.add_argument("--countdown", type=int,   default=3,
+                        help="Seconds before execution starts (default: 3)")
+    parser.add_argument("--debug",     action="store_true",
+                        help="Show debug window with detected grid and solution")
+    parser.add_argument("--solve-only", action="store_true",
+                        help="Detect and solve but do not click")
+    args = parser.parse_args()
+
+    screen.init_game_region()
+    run_patches(countdown=args.countdown, delay=args.delay,
+                debug=args.debug, solve_only=args.solve_only)

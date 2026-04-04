@@ -1,7 +1,10 @@
-import mss
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import cv2
-from pathlib import Path
+import screen
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 TEMPLATE_SIZE = (64, 64)
@@ -56,10 +59,6 @@ class GridInfo:
         return self.height / self.rows
 
 
-def capture_screen() -> np.ndarray:
-    with mss.mss() as sct:
-        shot = sct.grab(sct.monitors[1])
-        return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
 
 
 def _grid_line_mask(img: np.ndarray) -> np.ndarray:
@@ -286,7 +285,7 @@ def draw_debug(img: np.ndarray, grid: GridInfo, board: list[list[int]]) -> np.nd
 
 def detect_board(debug: bool = False) -> tuple[GridInfo | None, list[list[int]]]:
     print("Capturing screen ...")
-    img = capture_screen()
+    img = screen.capture()
 
     print("Detecting grid ...")
     grid = find_grid(img)
@@ -314,4 +313,5 @@ def detect_board(debug: bool = False) -> tuple[GridInfo | None, list[list[int]]]
 
 
 if __name__ == "__main__":
+    screen.init_game_region()
     detect_board(debug=True)

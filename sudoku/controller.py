@@ -1,9 +1,14 @@
 import copy
 import time
 import ctypes
+import sys
+from pathlib import Path
 
-from board_vision import GridInfo, detect_board
-from solver import solve, print_board
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sudoku.board_vision import GridInfo, detect_board
+from sudoku.solver import solve, print_board
+import screen
 
 _user32 = ctypes.windll.user32
 _MOUSEEVENTF_MOVE     = 0x0001
@@ -16,10 +21,11 @@ _VK_DIGIT = {i: 0x30 + i for i in range(1, 10)}
 
 
 def _move(x: int, y: int) -> None:
+    ox, oy = screen.game_offset()
     screen_w = _user32.GetSystemMetrics(0)
     screen_h = _user32.GetSystemMetrics(1)
-    nx = int(x * 65535 / screen_w)
-    ny = int(y * 65535 / screen_h)
+    nx = int((x + ox) * 65535 / screen_w)
+    ny = int((y + oy) * 65535 / screen_h)
     _user32.mouse_event(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, nx, ny, 0, 0)
 
 
@@ -90,25 +96,14 @@ def execute_solution(grid: GridInfo, original: list[list[int]], solution: list[l
     print("Done.")
 
 
-if __name__ == "__main__":
-    import sys
-    import argparse
-    sys.path.insert(0, ".")
-
-    parser = argparse.ArgumentParser(description="Solve and execute a LinkedIn Sudoku puzzle.")
-    parser.add_argument("--delay",     type=float, default=0.03,
-                        help="Seconds between each cell input (default: 0.08)")
-    parser.add_argument("--countdown", type=int,   default=3,
-                        help="Seconds to wait before executing (default: 3)")
-    parser.add_argument("--debug",     action="store_true",
-                        help="Show debug window with detected grid and numbers")
-    args = parser.parse_args()
-
-    grid, board = detect_board(debug=args.debug)
+def run_sudoku(countdown: int = 3, delay: float = 0.03,
+               debug: bool = False) -> bool:
+    """Detect, solve, and execute the Sudoku puzzle. Returns True on success."""
+    grid, board = detect_board(debug=debug)
 
     if grid is None:
         print("Could not detect board.")
-        sys.exit(1)
+        return False
 
     original = copy.deepcopy(board)
 
@@ -120,9 +115,26 @@ if __name__ == "__main__":
 
     if result is None:
         print("No solution found.")
-        sys.exit(1)
+        return False
 
     print("Solution:")
     print_board(result, original)
 
-    execute_solution(grid, original, result, cell_delay=args.delay, countdown=args.countdown)
+    execute_solution(grid, original, result, cell_delay=delay, countdown=countdown)
+    return True
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Solve and execute a LinkedIn Sudoku puzzle.")
+    parser.add_argument("--delay",     type=float, default=0.03,
+                        help="Seconds between each cell input (default: 0.03)")
+    parser.add_argument("--countdown", type=int,   default=3,
+                        help="Seconds to wait before executing (default: 3)")
+    parser.add_argument("--debug",     action="store_true",
+                        help="Show debug window with detected grid and numbers")
+    args = parser.parse_args()
+
+    screen.init_game_region()
+    run_sudoku(countdown=args.countdown, delay=args.delay, debug=args.debug)

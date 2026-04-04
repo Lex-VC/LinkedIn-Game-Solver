@@ -17,10 +17,13 @@ import ctypes
 import ctypes.wintypes
 import sys
 import argparse
+from pathlib import Path
 
-sys.path.insert(0, ".")
-from board_vision import capture_screen, detect_board, read_clue, BoardInfo
-from solver import solve_crossclimb, solve_endpoints
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from crossclimb.board_vision import detect_board, read_clue, BoardInfo
+from crossclimb.solver import solve_crossclimb, solve_endpoints
+import screen
 
 _user32 = ctypes.windll.user32
 _MOUSEEVENTF_MOVE      = 0x0001
@@ -40,8 +43,9 @@ _SCREEN_H = _user32.GetSystemMetrics(1)
 # ---------------------------------------------------------------------------
 
 def _move(x: int, y: int) -> None:
-    nx = int(x * 65535 / _SCREEN_W)
-    ny = int(y * 65535 / _SCREEN_H)
+    ox, oy = screen.game_offset()
+    nx = int((x + ox) * 65535 / _SCREEN_W)
+    ny = int((y + oy) * 65535 / _SCREEN_H)
     _user32.mouse_event(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE,
                         nx, ny, 0, 0)
 
@@ -109,8 +113,6 @@ def _drag(from_x: int, from_y: int,
         time.sleep(duration / steps)
 
     # Settle back to exact target
-    time.sleep(0.05)
-    _move(to_x, to_y)
     time.sleep(0.15)
     _user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
@@ -142,8 +144,8 @@ def _collect_clues(board: BoardInfo) -> dict[int, str]:
         _click(cx, cy)
         time.sleep(1.2)   # wait for clue dropdown to update
 
-        screen = capture_screen()
-        clue = read_clue(screen, board)
+        img = screen.capture()
+        clue = read_clue(img, board)
 
         if clue:
             clues[row.index] = clue
@@ -257,8 +259,8 @@ def _solve_locked_rows(board: BoardInfo,
     _click(*top_locked.center)
     time.sleep(1.2)
 
-    screen = capture_screen()
-    clue = read_clue(screen, board)
+    img = screen.capture()
+    clue = read_clue(img, board)
 
     if not clue:
         print("  Locked rows: [OCR failed]")
@@ -293,8 +295,8 @@ def _solve_locked_rows(board: BoardInfo,
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def run_crossclimb(countdown: int = 3, debug: bool = False) -> None:
-    """Run the full Crossclimb solver."""
+def run_crossclimb(countdown: int = 3, debug: bool = False) -> bool:
+    """Run the full Crossclimb solver. Returns True on success."""
 
     print(f"Starting in {countdown}s — switch to the browser now ...")
     for i in range(countdown, 0, -1):
@@ -303,11 +305,11 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> None:
 
     # ---- Phase 1: Detect board ----
     print("\n=== Phase 1: Board Detection ===")
-    screen = capture_screen()
-    board = detect_board(screen, debug=debug)
+    img = screen.capture()
+    board = detect_board(img, debug=debug)
     if board is None:
         print("FATAL: Could not detect the Crossclimb board.")
-        return
+        return False
 
     middle = board.middle_rows
     print(f"{len(middle)} middle rows, word length = {board.word_length}")
@@ -320,7 +322,7 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> None:
         print(f"WARNING: Read {len(clues)}/{len(middle)} clues.")
     if not clues:
         print("FATAL: No clues could be read.")
-        return
+        return False
 
     # ---- Phase 3: AI solving ----
     print("\n=== Phase 3: AI Solving ===")
@@ -344,8 +346,8 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> None:
     if current_order != target_order:
         # Re-detect board to get updated positions after typing
         time.sleep(1.0)
-        screen = capture_screen()
-        board2 = detect_board(screen)
+        img = screen.capture()
+        board2 = detect_board(img)
         if board2 is not None:
             _reorder_rows(board2, target_order)
         else:
@@ -356,10 +358,10 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> None:
 
     # ---- Phase 6: Solve locked rows ----
     print("\n=== Phase 6: Solving Locked Rows ===")
-    time.sleep(2.0)  # wait for unlock animation
+    time.sleep(4.0)  # wait for unlock animation
 
-    screen = capture_screen()
-    board3 = detect_board(screen)
+    img = screen.capture()
+    board3 = detect_board(img)
     if board3 is None:
         print("  WARNING: Re-detection failed, using original board")
         board3 = board
@@ -367,6 +369,7 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> None:
     _solve_locked_rows(board3, ladder)
 
     print("\n=== Done! ===")
+    return True
 
 
 if __name__ == "__main__":
@@ -378,4 +381,5 @@ if __name__ == "__main__":
                         help="Show debug window with detected board")
     args = parser.parse_args()
 
+    screen.init_game_region()
     run_crossclimb(countdown=args.countdown, debug=args.debug)
