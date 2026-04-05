@@ -2,6 +2,11 @@
 
 A Windows bot that uses computer vision and automated mouse/keyboard input to play all seven daily LinkedIn games. Open a game in your browser, run the solver, and watch it play.
 
+## Demo
+
+<!-- Upload your MP4 to GitHub by editing this file on github.com and dragging the video in, then paste the resulting URL below -->
+https://github.com/user-attachments/assets/YOUR_VIDEO_ID_HERE
+
 ## Games
 
 | Game | Approach | LLM needed? |
@@ -42,43 +47,65 @@ pip install opencv-python numpy mss pytesseract groq
 
 ## Usage
 
-### Play all games (dispatcher)
+### Quick start
 
-The dispatcher navigates to each game in your browser, runs its solver, and moves on:
+1. Open LinkedIn Games in your browser and make sure the window is visible (not minimised).
+2. Set your `GROQ_API_KEY` environment variable if you want Pinpoint or Crossclimb solved.
+3. Run the dispatcher — it will handle the rest:
 
 ```
 python dispatcher.py
 ```
 
-Make sure the browser is focused and visible before the countdown finishes. The dispatcher uses Ctrl+L to open the address bar and type each game URL.
+Switch focus to your browser before the countdown ends. The dispatcher uses Ctrl+L to navigate to each game URL automatically.
 
-Options:
+### Play all games (dispatcher)
+
+```
+python dispatcher.py [options]
+```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--countdown` | 5 | Seconds before starting |
+| `--countdown` | 5 | Seconds before starting — time to switch to the browser |
 | `--pause` | 5 | Seconds to wait between games |
-| `--load-wait` | 6 | Seconds to wait for page load |
-| `--timeout` | 120 | Max seconds per game before skipping |
+| `--load-wait` | 6 | Seconds to wait for a page to finish loading |
+| `--game-countdown` | 3 | Countdown passed to each individual game controller |
 
-If any game fails it is skipped and the dispatcher moves on.
+If a game fails or times out it is skipped and the dispatcher moves on to the next one.
 
 ### Play a single game
 
-Navigate to the game in your browser, then run its controller from inside the game folder:
+Navigate to the game in your browser first, then run its controller:
 
 ```
-cd patches && python controller.py
-cd zip && python controller.py
-cd sudoku && python controller.py
-cd tango && python controller.py
-cd queens && python controller.py
-cd pinpoint && python controller.py
-cd crossclimb && python controller.py
+cd patches     && python controller.py
+cd zip         && python controller.py
+cd sudoku      && python controller.py
+cd tango       && python controller.py
+cd queens      && python controller.py
+cd pinpoint    && python controller.py
+cd crossclimb  && python controller.py
 ```
 
-Most controllers accept `--countdown`, `--delay`, and `--debug` flags. Use `--debug` to show the CV detection overlay.
+Common flags accepted by most controllers:
+
+| Flag | Description |
+|------|-------------|
+| `--countdown N` | Seconds before the solver starts (default 5) |
+| `--delay N` | Seconds between individual clicks/actions |
+| `--debug` | Show the CV detection overlay — useful for diagnosing misdetections |
+
+### Debugging detection
+
+If the solver misreads the board, run with `--debug` to see what OpenCV is detecting:
+
+```
+cd queens && python controller.py --debug
+```
+
+A window will pop up overlaying the detected grid, colours, or OCR regions on the captured screenshot. Press any key to proceed past each debug frame.
 
 ### Safety
 
-Move your mouse to the **top-left corner** of the screen (within 5 px) at any time to abort execution.
+Move your mouse to the **top-left corner** of the screen (within 5 px) at any time to immediately abort execution.
