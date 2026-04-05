@@ -25,12 +25,7 @@ HConstraints = dict[tuple[int, int], str]
 VConstraints = dict[tuple[int, int], str]
 
 
-# ---------------------------------------------------------------------------
-# Validity checking
-# ---------------------------------------------------------------------------
-
 def _edge_ok(a: int, b: int, constraint: str | None) -> bool:
-    """Return False if two placed values violate a constraint."""
     if constraint is None or a == EMPTY or b == EMPTY:
         return True
     if constraint == EQUAL    and a != b: return False
@@ -42,7 +37,6 @@ def _can_place(board: Board, n: int, r: int, c: int, val: int,
                 h_con: HConstraints, v_con: VConstraints) -> bool:
     half = n // 2
 
-    # ---- Equal / opposite constraints with placed neighbours ----
     if r > 0:
         if not _edge_ok(val, board[r-1][c], h_con.get((r-1, c))): return False
     if r < n-1:
@@ -52,19 +46,15 @@ def _can_place(board: Board, n: int, r: int, c: int, val: int,
     if c < n-1:
         if not _edge_ok(val, board[r][c+1], v_con.get((r, c))):   return False
 
-    # ---- Row checks ----
     row = board[r]
-    # Balance: can't exceed half cells of one symbol
     if sum(1 for v in row if v == val) + 1 > half:
         return False
-    # No-triple: check every window of 3 that includes column c
     for start in (c - 2, c - 1, c):
         if 0 <= start and start + 2 < n:
             w = [row[start + i] if start + i != c else val for i in range(3)]
             if EMPTY not in w and w[0] == w[1] == w[2]:
                 return False
 
-    # ---- Column checks ----
     col = [board[rr][c] for rr in range(n)]
     if sum(1 for v in col if v == val) + 1 > half:
         return False
@@ -77,12 +67,8 @@ def _can_place(board: Board, n: int, r: int, c: int, val: int,
     return True
 
 
-# ---------------------------------------------------------------------------
-# Backtracking solver
-# ---------------------------------------------------------------------------
-
 def solve(board: Board, h_con: HConstraints, v_con: VConstraints) -> Board | None:
-    """Fill all EMPTY cells.  Modifies board in-place; returns it on success or None."""
+    """Fill all EMPTY cells. Modifies board in-place; returns it on success or None."""
     n = len(board)
     for r in range(n):
         for c in range(n):
@@ -97,19 +83,11 @@ def solve(board: Board, h_con: HConstraints, v_con: VConstraints) -> Board | Non
     return board
 
 
-# ---------------------------------------------------------------------------
-# Debug print
-# ---------------------------------------------------------------------------
-
 def print_board(board: Board) -> None:
     sym = {EMPTY: '.', SUN: 'S', MOON: 'M'}
     for row in board:
         print(' '.join(sym[v] for v in row))
 
-
-# ---------------------------------------------------------------------------
-# Standalone entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys

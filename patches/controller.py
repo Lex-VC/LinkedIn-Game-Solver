@@ -1,18 +1,3 @@
-"""Patches controller — detects, solves, and executes the Patches puzzle.
-
-Interaction model (LinkedIn Patches):
-  Each empty cell must be clicked once to assign it to the shape it belongs to.
-  The game infers the shape from which seed the cell is adjacent/connected to,
-  so clicking every non-seed cell in the solved rectangle (top-left → bottom-right)
-  completes the shape.
-
-  If the game requires a different mechanic (e.g. click-drag or multi-click),
-  adjust execute_solution() accordingly.
-
-Safety:
-  Move the mouse to the top-left corner of the screen (≤ 5 px from corner) to
-  abort execution at any time.
-"""
 import copy
 import sys
 import time
@@ -36,18 +21,12 @@ _MOUSEEVENTF_LEFTUP   = 0x0004
 _MOUSEEVENTF_ABSOLUTE = 0x8000
 
 
-# ---------------------------------------------------------------------------
-# Mouse helpers
-# ---------------------------------------------------------------------------
-
-_SCREEN_W = _user32.GetSystemMetrics(0)
-_SCREEN_H = _user32.GetSystemMetrics(1)
-
-
 def _move(x: int, y: int) -> None:
     ox, oy = screen.game_offset()
-    nx = int((x + ox) * 65535 / _SCREEN_W)
-    ny = int((y + oy) * 65535 / _SCREEN_H)
+    screen_w = _user32.GetSystemMetrics(0)
+    screen_h = _user32.GetSystemMetrics(1)
+    nx = int((x + ox) * 65535 / screen_w)
+    ny = int((y + oy) * 65535 / screen_h)
     _user32.mouse_event(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, nx, ny, 0, 0)
 
 
@@ -63,7 +42,6 @@ def _drag_through(points: list[tuple[int, int]], delay: float = 0.0) -> None:
 
 
 def _aborted() -> bool:
-    """Return True when the mouse is in the top-left escape corner."""
     pos = ctypes.wintypes.POINT()
     _user32.GetCursorPos(ctypes.byref(pos))
     return pos.x <= 5 and pos.y <= 5
@@ -75,10 +53,6 @@ def _cell_center(grid: GridInfo, r: int, c: int) -> tuple[int, int]:
     return x, y
 
 
-# ---------------------------------------------------------------------------
-# Execution
-# ---------------------------------------------------------------------------
-
 def execute_solution(
     grid:       GridInfo,
     seeds:      list[PatchSeed],
@@ -86,23 +60,18 @@ def execute_solution(
     move_delay: float = 0.08,
     countdown:  int   = 3,
 ) -> None:
-    """Execute the solution by dragging between opposing corners of each shape.
-
-    For each seed's patch, find the bounding rectangle of all cells assigned
-    to it, then drag from the top-left pixel corner to the bottom-right pixel
-    corner.  The game associates the dragged rectangle with the seed inside it.
+    """Drag between opposing corners of each shape's bounding rectangle.
 
     Args:
         grid:         Detected grid (screen coordinates).
         seeds:        Seed list from board_vision.
         solution:     2-D grid[r][c] = seed index from solver.
-        shape_delay:  Pause between shapes (seconds).
+        move_delay:   Pause between shapes (seconds).
         countdown:    Seconds before execution begins.
     """
     rows = len(solution)
     cols = len(solution[0]) if rows else 0
 
-    # Collect all cells per shape index
     shape_cells: dict[int, list[tuple[int, int]]] = {}
     for r in range(rows):
         for c in range(cols):
@@ -142,10 +111,6 @@ def execute_solution(
 
     print("Done.")
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def run_patches(countdown: int = 3, delay: float = 0.08,
                 debug: bool = False, solve_only: bool = False) -> bool:

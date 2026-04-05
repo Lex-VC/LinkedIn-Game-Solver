@@ -1,5 +1,6 @@
 import time
 import ctypes
+import ctypes.wintypes
 import sys
 from pathlib import Path
 
@@ -33,6 +34,12 @@ def _mouse_up() -> None:
     _user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
+def _aborted() -> bool:
+    pos = ctypes.wintypes.POINT()
+    _user32.GetCursorPos(ctypes.byref(pos))
+    return pos.x <= 5 and pos.y <= 5
+
+
 def _cell_center(grid: GridInfo, row: int, col: int) -> tuple[int, int]:
     x = int(grid.x + (col + 0.5) * grid.cell_w)
     y = int(grid.y + (row + 0.5) * grid.cell_h)
@@ -41,14 +48,7 @@ def _cell_center(grid: GridInfo, row: int, col: int) -> tuple[int, int]:
 
 def execute_solution(grid: GridInfo, path: list[tuple[int, int]],
                      move_delay: float = 0.02, countdown: int = 3) -> None:
-    """Click and drag through the solution path on screen.
-
-    Args:
-        grid:        Detected grid info (screen coordinates).
-        path:        Ordered list of (row, col) from the solver.
-        move_delay:  Seconds to pause between each cell move.
-        countdown:   Seconds to wait before starting (time to focus the browser).
-    """
+    """Click and drag through the solution path on screen."""
     if not path:
         print("Empty path — nothing to execute.")
         return
@@ -66,6 +66,10 @@ def execute_solution(grid: GridInfo, path: list[tuple[int, int]],
     time.sleep(move_delay)
 
     for row, col in path[1:]:
+        if _aborted():
+            _mouse_up()
+            print("Aborted: mouse moved to top-left corner.")
+            return
         x, y = _cell_center(grid, row, col)
         _move(x, y)
         if move_delay > 0:

@@ -13,8 +13,6 @@ EMPTY = 'empty'
 EQUAL = 'equal'       # '=' — adjacent cells must have the same symbol
 OPPOSITE = 'opposite' # '×' — adjacent cells must have different symbols
 
-# Minimum line length (px) for the morphological open used in grid detection.
-# Must be shorter than any grid line but longer than symbol arc segments.
 _MIN_LINE_LEN = 60
 
 TEMPLATE_DIR            = Path(__file__).parent / "templates"
@@ -23,14 +21,13 @@ CONSTRAINT_THRESHOLD     = 0.55
 
 _constraint_templates: dict[str, list[np.ndarray]] = {}
 
-# HSV colour ranges (OpenCV: H in [0, 180], S/V in [0, 255])
 _SUN_LO  = np.array([10,  150, 150])
 _SUN_HI  = np.array([30,  255, 255])
 _MOON_LO = np.array([95,   80,  50])
 _MOON_HI = np.array([130, 255, 220])
 
-_SYMBOL_FRAC = 0.02   # min fraction of cell area to count as a symbol
-_CROP_FRAC   = 0.70   # centre-crop fraction — avoids grid-line borders
+_SYMBOL_FRAC = 0.02
+_CROP_FRAC   = 0.70
 
 
 class GridInfo:
@@ -60,16 +57,10 @@ class TangoBoard:
         v_constraints: dict[tuple[int, int], str],
     ):
         self.grid = grid
-        self.cells = cells              # cells[r][c] ∈ {SUN, MOON, EMPTY}
+        self.cells = cells
         self.h_constraints = h_constraints  # (r, c): constraint on edge below row r at col c
         self.v_constraints = v_constraints  # (r, c): constraint on edge right of col c at row r
 
-
-
-
-# ---------------------------------------------------------------------------
-# Grid detection via Canny edges (grey-cell robust)
-# ---------------------------------------------------------------------------
 
 def _line_positions(line_img: np.ndarray, axis: int) -> list[int]:
     """Project a binary line image and return the centre of each bright band."""
@@ -93,18 +84,11 @@ def _line_positions(line_img: np.ndarray, axis: int) -> list[int]:
 
 
 def _extract_grid_lines(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return (h_lines, v_lines) binary masks using Canny edge detection.
-
-    Canny detects transitions, not fills, so the grey pre-filled Tango cells
-    contribute only their border edges (which are real grid lines) and never
-    produce wide blobs in the projection.
-    """
+    """Return (h_lines, v_lines) binary masks using Canny edge detection."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     edges = cv2.Canny(blurred, 30, 90)
 
-    # Morphological open keeps only segments longer than _MIN_LINE_LEN,
-    # eliminating symbol arcs, text, and other short edge fragments.
     h_lines = cv2.morphologyEx(
         edges, cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_RECT, (_MIN_LINE_LEN, 1)))
@@ -219,10 +203,6 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Cell-symbol detection
-# ---------------------------------------------------------------------------
-
 def _classify_cell(roi: np.ndarray) -> str:
     """Return SUN, MOON, or EMPTY based on dominant colour in the ROI."""
     if roi.size == 0:
@@ -259,10 +239,6 @@ def find_cells(img: np.ndarray, grid: GridInfo) -> list[list[str]]:
     return cells
 
 
-# ---------------------------------------------------------------------------
-# Constraint detection  ('=' vs '×' on cell edges)
-# ---------------------------------------------------------------------------
-
 def _augment_template(img: np.ndarray, shift: int = 3, step: int = 1) -> list[np.ndarray]:
     """Generate shifted variants of a template to handle crop misalignment."""
     h, w = img.shape
@@ -277,7 +253,6 @@ def _augment_template(img: np.ndarray, shift: int = 3, step: int = 1) -> list[np
 
 
 def _load_constraint_templates() -> dict[str, list[np.ndarray]]:
-    """Load equal.png and opposite.png from the templates directory."""
     if _constraint_templates:
         return _constraint_templates
     for label, filename in [(EQUAL, "equal.png"), (OPPOSITE, "opposite.png")]:
@@ -297,9 +272,7 @@ def _preprocess_constraint(window: np.ndarray) -> np.ndarray:
 
 
 def _classify_constraint(window: np.ndarray) -> str | None:
-    """Classify a small edge-centred crop as EQUAL, OPPOSITE, or None
-    using template matching against equal.png / opposite.png.
-    """
+    """Classify a small edge-centred crop as EQUAL, OPPOSITE, or None."""
     if window.size == 0:
         return None
     templates = _load_constraint_templates()
@@ -360,10 +333,6 @@ def find_constraints(
     return h_constraints, v_constraints
 
 
-# ---------------------------------------------------------------------------
-# Debug visualisation
-# ---------------------------------------------------------------------------
-
 _CELL_COLOUR = {SUN: (0, 165, 255), MOON: (200, 80, 0)}
 _CELL_LABEL  = {SUN: 'S', MOON: 'M'}
 _CON_LABEL   = {EQUAL: '=', OPPOSITE: 'x'}
@@ -406,10 +375,6 @@ def draw_debug(img: np.ndarray, board: TangoBoard) -> np.ndarray:
 
 
 def draw_grid_detection(img: np.ndarray) -> np.ndarray:
-    """Return a side-by-side panel showing each stage of grid isolation:
-    original | H-line mask | V-line mask | intersection + detected grid.
-    Useful for diagnosing detection failures.
-    """
     h_lines, v_lines = _extract_grid_lines(img)
 
     expand = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
@@ -440,7 +405,6 @@ def draw_grid_detection(img: np.ndarray) -> np.ndarray:
     v_bgr = _to_bgr(v_lines)
     inter_bgr = _to_bgr(intersections)
 
-    # Label each panel
     for panel, text in [
         (img,       "original"),
         (h_bgr,     "H lines (Canny)"),
@@ -453,10 +417,6 @@ def draw_grid_detection(img: np.ndarray) -> np.ndarray:
 
     return np.hstack([img, h_bgr, v_bgr, inter_bgr, overlay])
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 def detect_board(debug: bool = False) -> TangoBoard | None:
     print("Capturing screen...")

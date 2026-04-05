@@ -1,13 +1,11 @@
-"""Crossclimb solver — uses Groq LLM to solve clues and arrange as word ladder."""
-
 import os
+import re
 import json
 from groq import Groq
 
 
-def _call_llm(prompt: str,model: str, temperature: float = 0.3,max_tokens = 7500, effort = "medium") -> str:
-    """Send a prompt to the Groq LLM and return the raw response text.
-    """
+def _call_llm(prompt: str, model: str, temperature: float = 0.3,
+              max_tokens: int = 7500, effort: str = "medium") -> str:
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -32,21 +30,17 @@ def _call_llm(prompt: str,model: str, temperature: float = 0.3,max_tokens = 7500
             temperature=temperature
         )
     return (response.choices[0].message.content or "").strip()
-          
 
 
 def _parse_json(raw: str) -> dict:
     """Extract and parse JSON from an LLM response that may contain markdown."""
-    import re
     text = raw
 
-    # Strip markdown fences
     if "```json" in text:
         text = text.split("```json", 1)[1].split("```", 1)[0].strip()
     elif "```" in text:
         text = text.split("```", 1)[1].split("```", 1)[0].strip()
 
-    # Last resort: find the first { … } block
     if not text.startswith("{"):
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if m:
@@ -58,6 +52,7 @@ def _parse_json(raw: str) -> dict:
 def solve_crossclimb(clues: dict[int, str],
                      word_length: int) -> list[tuple[int, str]]:
     """Solve crossclimb clues and return answers in word-ladder order.
+
     Args:
         clues:       {row_index: clue_text}  (middle rows only).
         word_length: number of letters per word.
@@ -97,7 +92,7 @@ The "ladder" array must list entries from the TOP of the ladder to the BOTTOM,
 so that ladder[i] and ladder[i+1] differ by exactly one letter.
 Output ONLY the JSON object — no markdown fences, no commentary."""
 
-    raw = _call_llm(prompt,"openai/gpt-oss-120b", temperature=0.3)
+    raw = _call_llm(prompt, "openai/gpt-oss-120b", temperature=0.3)
     print(f"--- RAW LLM RESPONSE ---\n{raw}\n--- END ---")
     data = _parse_json(raw)
 
@@ -105,7 +100,6 @@ Output ONLY the JSON object — no markdown fences, no commentary."""
     for entry in data["ladder"]:
         result.append((int(entry["row"]), entry["word"].upper()))
 
-    # Sanity-check: verify the ladder property
     for i in range(len(result) - 1):
         w1 = result[i][1]
         w2 = result[i + 1][1]
@@ -120,10 +114,6 @@ Output ONLY the JSON object — no markdown fences, no commentary."""
 def solve_endpoints(clue: str, word_length: int,
                     top_adjacent: str, bottom_adjacent: str) -> tuple[str, str]:
     """Solve both locked endpoint rows from a single shared clue.
-
-    The clue describes a two-word phrase where one word is the top locked row
-    and the other is the bottom locked row (order may be swapped).
-    Each answer must differ from its adjacent ladder word by exactly one letter.
 
     Returns:
         (top_word, bottom_word) both in uppercase.
@@ -148,7 +138,7 @@ the clue.
 Output ONLY JSON:
 {{"top": "<WORD>", "bottom": "<WORD>"}}"""
 
-    raw = _call_llm(prompt,"openai/gpt-oss-120b", temperature=0.2)
+    raw = _call_llm(prompt, "openai/gpt-oss-120b", temperature=0.2)
     print(f"--- RAW ENDPOINT RESPONSE ---\n{raw}\n--- END ---")
     data = _parse_json(raw)
 

@@ -6,10 +6,7 @@ import numpy as np
 import cv2
 import screen
 
-# Minimum line length (px) for morphological open in grid detection.
 _MIN_LINE_LEN = 25
-
-# Centre-crop fraction of each cell used to sample the region colour.
 _CROP_FRAC = 0.50
 
 
@@ -36,12 +33,6 @@ class QueensBoard:
         self.grid = grid
         self.regions = regions  # regions[r][c] = region_id (0-based)
 
-
-
-
-# ---------------------------------------------------------------------------
-# Grid detection via Canny edges
-# ---------------------------------------------------------------------------
 
 def _line_positions(line_img: np.ndarray, axis: int) -> list[int]:
     """Project a binary line image and return the centre of each bright band."""
@@ -129,9 +120,7 @@ def _extract_grid_lines(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def find_grid(img: np.ndarray) -> GridInfo | None:
     h_lines, v_lines = _extract_grid_lines(img)
 
-    # First pass: estimate cell spacing from raw H/V line projections so we
-    # can size the dilation kernel proportionally instead of using a fixed
-    # 25 px value that breaks at lower browser-zoom levels.
+    # Estimate cell spacing from raw projections to size the dilation kernel
     h_raw = _merge_close(_line_positions(h_lines, axis=1))
     v_raw = _merge_close(_line_positions(v_lines, axis=0))
     if len(h_raw) < 2 or len(v_raw) < 2:
@@ -195,10 +184,6 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Colour-region detection
-# ---------------------------------------------------------------------------
-
 def _cell_color(crop: np.ndarray, grid: GridInfo, r: int, c: int) -> np.ndarray:
     """Return the mean LAB colour of the centre of cell (r, c)."""
     half_w = grid.cell_w * _CROP_FRAC / 2
@@ -233,10 +218,6 @@ def find_regions(img: np.ndarray, grid: GridInfo) -> list[list[int]]:
     return [[int(labels[r * n + c]) for c in range(n)] for r in range(n)]
 
 
-# ---------------------------------------------------------------------------
-# Debug visualisation
-# ---------------------------------------------------------------------------
-
 def draw_debug(img: np.ndarray, board: QueensBoard) -> np.ndarray:
     out = img.copy()
     g = board.grid
@@ -261,10 +242,6 @@ def draw_debug(img: np.ndarray, board: QueensBoard) -> np.ndarray:
 
     return out
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 def detect_board(debug: bool = False) -> QueensBoard | None:
     print("Capturing screen...")

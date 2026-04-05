@@ -31,13 +31,8 @@ _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP   = 0x0004
 _MOUSEEVENTF_ABSOLUTE = 0x8000
 
-# Clicks required to reach each symbol from an empty cell
 _CLICKS = {SUN: 1, MOON: 2}
 
-
-# ---------------------------------------------------------------------------
-# Mouse helpers
-# ---------------------------------------------------------------------------
 
 def _move(x: int, y: int) -> None:
     ox, oy = screen.game_offset()
@@ -55,7 +50,6 @@ def _click(x: int, y: int) -> None:
 
 
 def _aborted() -> bool:
-    """Return True if the mouse has been moved to the top-left escape corner."""
     pos = ctypes.wintypes.POINT()
     _user32.GetCursorPos(ctypes.byref(pos))
     return pos.x <= 5 and pos.y <= 5
@@ -67,10 +61,6 @@ def _cell_center(grid: GridInfo, r: int, c: int) -> tuple[int, int]:
     return x, y
 
 
-# ---------------------------------------------------------------------------
-# Execution
-# ---------------------------------------------------------------------------
-
 def execute_solution(
     grid: GridInfo,
     original_cells: list[list[str]],
@@ -78,15 +68,7 @@ def execute_solution(
     cell_delay: float = 0.08,
     countdown: int = 3,
 ) -> None:
-    """Click empty cells to realise the solution.
-
-    Args:
-        grid:           Detected grid info (screen coordinates).
-        original_cells: Vision board (strings) — pre-filled cells are skipped.
-        solution:       Fully-filled solver board (ints).
-        cell_delay:     Pause between cells (seconds).
-        countdown:      Seconds to wait before starting.
-    """
+    """Click empty cells to realise the solution."""
     n = len(original_cells)
     actions = [
         (r, c, _CLICKS[solution[r][c]])
@@ -120,10 +102,6 @@ def execute_solution(
     print("Done.")
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def run_tango(countdown: int = 3, delay: float = 0.08,
               debug: bool = False) -> bool:
     """Detect, solve, and execute the Tango puzzle. Returns True on success."""
@@ -138,7 +116,6 @@ def run_tango(countdown: int = 3, delay: float = 0.08,
     v_con    = board_obj.v_constraints
     n        = grid.rows
 
-    # Convert vision strings -> solver ints
     def _vi(v: str) -> int:
         return SUN if v == V_SUN else (MOON if v == V_MOON else EMPTY)
 

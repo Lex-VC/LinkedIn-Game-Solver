@@ -1,20 +1,3 @@
-"""Patches board vision — detect the grid, seeds, numbers, and shape types.
-
-The LinkedIn Patches game presents:
-  - A square grid (typically 6×6) with light-grey **dashed** grid lines.
-  - Coloured "seed" shapes in some cells, each with:
-      • a colour
-      • optionally a white number indicating the patch size
-      • a dashed outline indicating the shape type (square / wide / tall)
-  - Seed shapes without a number have unknown size.
-
-Detection pipeline:
-  1. Find the grid via Canny edge detection + morphological closing (to
-     bridge dashed gaps) + intersection clustering.
-  2. Find seed cells by detecting saturated coloured blobs.
-  3. Read numbers on seeds via digit-template matching.
-  4. Determine shape type from the dashed outline aspect ratio.
-"""
 from __future__ import annotations
 
 import sys
@@ -26,28 +9,20 @@ import cv2
 import screen
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 TEMPLATE_SIZE = (64, 64)
 MATCH_THRESHOLD = 0.55
 
-_MIN_LINE_LEN = 40          # morphological open length for grid lines
-_DASH_BRIDGE = 15            # dilation to bridge dashed-line gaps
-_CROP_FRAC = 0.90            # centre-crop fraction to avoid grid lines
-_SAT_THRESHOLD = 20          # minimum saturation to count as "coloured"
-_COLOUR_FRAC = 0.06          # min fraction of cell area for a seed
+_MIN_LINE_LEN = 40
+_DASH_BRIDGE = 15
+_CROP_FRAC = 0.90
+_SAT_THRESHOLD = 20
+_COLOUR_FRAC = 0.06
 
 _digit_templates: dict[int, list[np.ndarray]] = {}
 _shape_templates: dict[str, list[np.ndarray]] = {}
 _SHAPE_TYPES = ['wide', 'tall', 'square', 'any']
 
-
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
 
 class GridInfo:
     def __init__(self, x: int, y: int, width: int, height: int, rows: int, cols: int):
@@ -86,14 +61,8 @@ class PatchesBoard:
         self.seeds = seeds
 
 
-
-
-# ---------------------------------------------------------------------------
-# Grid detection (dashed lines → Canny + bridging)
-# ---------------------------------------------------------------------------
-
 def _line_positions(line_img: np.ndarray, axis: int) -> list[int]:
-    """Project a binary image along *axis* and return centres of bright bands."""
+    """Project a binary image along axis and return centres of bright bands."""
     projection = line_img.sum(axis=axis).astype(np.float32)
     if projection.max() > 0:
         projection = projection / projection.max() * 255
@@ -162,16 +131,11 @@ def _extend_cluster(cluster: list[int], image_size: int) -> list[list[int]]:
 
 
 def _extract_grid_lines(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return (h_lines, v_lines) binary masks.
-
-    Patches uses dashed grid lines, so after Canny we dilate along each axis
-    to bridge the gaps between dashes, then erode back to thin the result.
-    """
+    """Return (h_lines, v_lines) binary masks, bridging dashed gaps."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     edges = cv2.Canny(blurred, 30, 90)
 
-    # Bridge dashes: dilate horizontally then erode to restore thickness
     h_bridge = cv2.dilate(edges,
                           cv2.getStructuringElement(cv2.MORPH_RECT, (_DASH_BRIDGE, 1)))
     h_lines = cv2.morphologyEx(
@@ -188,12 +152,6 @@ def _extract_grid_lines(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def find_grid(img: np.ndarray) -> GridInfo | None:
-    """Detect the grid inside *img*.
-
-    Strategy: cluster the raw H/V line positions directly (no intersection
-    filter) so that UI noise from other parts of the panel does not destroy
-    the grid projection.  The best uniform-spacing cluster selects the grid.
-    """
     h_lines, v_lines = _extract_grid_lines(img)
 
     h_raw = _merge_close(_line_positions(h_lines, axis=1))
@@ -211,11 +169,7 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
     rows = len(h_cluster) - 1
     cols = len(v_cluster) - 1
 
-    # Try to make the grid square.  Prefer trimming an extra line from the
-    # longer axis (spurious border) over extending the shorter one (missing
-    # grid line), then fall back to extending if trimming cannot help.
     if rows != cols:
-        # Pass 1: trim the longer cluster (front or back)
         for _ in range(3):
             rows = len(h_cluster) - 1
             cols = len(v_cluster) - 1
@@ -237,7 +191,6 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
             if not trimmed:
                 break
 
-        # Pass 2: if still not square, extend the shorter axis
         if len(h_cluster) - 1 != len(v_cluster) - 1:
             target = max(len(h_cluster) - 1, len(v_cluster) - 1)
             for _ in range(2):
@@ -271,10 +224,6 @@ def find_grid(img: np.ndarray) -> GridInfo | None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Seed detection — find coloured blobs in cells
-# ---------------------------------------------------------------------------
-
 def _cell_roi(crop: np.ndarray, grid: GridInfo, r: int, c: int,
               frac: float = _CROP_FRAC) -> np.ndarray:
     """Return the centre-cropped ROI of cell (r, c)."""
@@ -290,7 +239,6 @@ def _cell_roi(crop: np.ndarray, grid: GridInfo, r: int, c: int,
 
 
 def _is_seed_cell(roi: np.ndarray) -> bool:
-    """Return True if the ROI has enough saturated (coloured) pixels."""
     if roi.size == 0:
         return False
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
@@ -300,30 +248,17 @@ def _is_seed_cell(roi: np.ndarray) -> bool:
 
 
 def _detect_shape_type(roi: np.ndarray) -> str:
-    """Classify the shape type using pattern matching against shape templates.
-
-    The game uses four shape types: wide, tall, square, any.
-    This function matches the seed ROI against learned binary templates for
-    each shape type and returns the best match.
-
-    If templates are not yet loaded, falls back to 'any' (graceful degradation).
-    """
+    """Classify shape type via template matching against shape templates."""
     if roi.size == 0:
         return 'any'
 
     templates = _load_shape_templates()
-
-    # If no templates loaded yet, default to 'any'
     if not templates:
         return 'any'
 
-    # Preprocess ROI: fill white numbers with seed color, convert to binary
     processed = _preprocess_roi_for_shape(roi)
-
-    # Score against all shape templates
     scores = _score_shape_templates(processed)
 
-    # Find best match
     best_shape = 'any'
     best_score = -1.0
     for shape, score in scores.items():
@@ -331,10 +266,7 @@ def _detect_shape_type(roi: np.ndarray) -> str:
             best_score = score
             best_shape = shape
 
-    # Only accept if above threshold, otherwise default to 'any'
-    if best_score >= MATCH_THRESHOLD:
-        return best_shape
-    return 'any'
+    return best_shape if best_score >= MATCH_THRESHOLD else 'any'
 
 
 def find_seeds(img: np.ndarray, grid: GridInfo) -> list[PatchSeed]:
@@ -351,18 +283,7 @@ def find_seeds(img: np.ndarray, grid: GridInfo) -> list[PatchSeed]:
     return seeds
 
 
-# ---------------------------------------------------------------------------
-# Number detection on seeds
-# ---------------------------------------------------------------------------
-
 def _load_template_binary(path: Path) -> np.ndarray:
-    """Load a saved template PNG and return it as a clean binary at TEMPLATE_SIZE.
-
-    Templates are saved as binary masks (0/255). We resize first — which
-    introduces intermediate values via cubic interpolation — then re-threshold
-    to restore clean binary. This matches what _preprocess_roi_for_shape /
-    _preprocess_roi_for_digit produce (also resized then compared as-is).
-    """
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         return None
@@ -372,7 +293,6 @@ def _load_template_binary(path: Path) -> np.ndarray:
 
 
 def _load_digit_templates() -> dict[int, list[np.ndarray]]:
-    """Load digit templates. Naming: <digit>.png or <digit>_<NNN>.png"""
     if _digit_templates:
         return _digit_templates
     for path in sorted(TEMPLATE_DIR.glob("*.png")):
@@ -389,7 +309,6 @@ def _load_digit_templates() -> dict[int, list[np.ndarray]]:
 
 
 def _load_shape_templates() -> dict[str, list[np.ndarray]]:
-    """Load shape templates. Naming: <shape>.png or <shape>_<NNN>.png"""
     if _shape_templates:
         return _shape_templates
     for path in sorted(TEMPLATE_DIR.glob("*.png")):
@@ -403,12 +322,7 @@ def _load_shape_templates() -> dict[str, list[np.ndarray]]:
 
 
 def _sat_mask_and_holes(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return (sat_mask, holes) for a seed ROI.
-
-    sat_mask — 255 where the seed color is, 0 for background and number gaps.
-    holes    — 255 only for interior low-saturation regions enclosed by the
-               seed blob (i.e. the white number pixels).  0 everywhere else.
-    """
+    """Return (sat_mask, holes) for a seed ROI."""
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV) if len(roi.shape) == 3 else \
           cv2.cvtColor(cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2HSV)
 
@@ -419,14 +333,12 @@ def _sat_mask_and_holes(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     ff = inv.copy()
     ff_mask = np.zeros((h + 2, w + 2), np.uint8)
     cv2.floodFill(ff, ff_mask, (0, 0), 0)
-    # ff now contains only pixels that were enclosed by the seed blob
     holes = ff
 
     return sat_mask, holes
 
 
 def _to_template_binary(mask: np.ndarray) -> np.ndarray:
-    """Resize a binary mask to TEMPLATE_SIZE and re-threshold to clean binary."""
     resized = cv2.resize(mask, TEMPLATE_SIZE, interpolation=cv2.INTER_CUBIC)
     _, binary = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
     return binary
@@ -442,10 +354,7 @@ def _preprocess_roi_for_shape(roi: np.ndarray) -> np.ndarray:
 
 
 def _preprocess_roi_for_digit(roi: np.ndarray) -> np.ndarray | None:
-    """Number silhouette only: just the interior holes from the seed blob.
-
-    Returns None when no enclosed holes exist (seed has no number).
-    """
+    """Number silhouette only: interior holes enclosed by the seed blob."""
     if roi.size == 0:
         return None
     _, holes = _sat_mask_and_holes(roi)
@@ -455,7 +364,6 @@ def _preprocess_roi_for_digit(roi: np.ndarray) -> np.ndarray | None:
 
 
 def _score_shape_templates(roi_processed: np.ndarray) -> dict[str, float]:
-    """Return the best match score for every loaded shape template."""
     templates = _load_shape_templates()
     scores: dict[str, float] = {}
     for shape_name in _SHAPE_TYPES:
@@ -505,18 +413,11 @@ def read_seed_numbers(img: np.ndarray, grid: GridInfo,
             seed.size = num
 
 
-
-
-# ---------------------------------------------------------------------------
-# Debug visualisation
-# ---------------------------------------------------------------------------
-
 def draw_debug(img: np.ndarray, board: PatchesBoard,
                solution: list[list[int]] | None = None) -> np.ndarray:
     out = img.copy()
     g = board.grid
 
-    # Draw grid boundary and lines
     cv2.rectangle(out, (g.x, g.y), (g.x + g.width, g.y + g.height), (0, 255, 0), 2)
     for r in range(g.rows + 1):
         y = int(g.y + r * g.cell_h)
@@ -525,7 +426,6 @@ def draw_debug(img: np.ndarray, board: PatchesBoard,
         x = int(g.x + c * g.cell_w)
         cv2.line(out, (x, g.y), (x, g.y + g.height), (0, 200, 0), 1)
 
-    # Mark seed cells
     for i, s in enumerate(board.seeds):
         px = int(g.x + (s.col + 0.5) * g.cell_w)
         py = int(g.y + (s.row + 0.5) * g.cell_h)
@@ -535,9 +435,7 @@ def draw_debug(img: np.ndarray, board: PatchesBoard,
         cv2.putText(out, info, (px - 20, py + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
-    # Draw solution overlay if provided
     if solution is not None:
-        # Label each cell with its seed index
         for r in range(g.rows):
             for c in range(g.cols):
                 si = solution[r][c]
@@ -553,7 +451,6 @@ def draw_debug(img: np.ndarray, board: PatchesBoard,
 
 
 def draw_grid_detection(img: np.ndarray) -> np.ndarray:
-    """Side-by-side debug panel for grid line detection stages."""
     h_lines, v_lines = _extract_grid_lines(img)
 
     h_raw = _merge_close(_line_positions(h_lines, axis=1))
@@ -610,10 +507,6 @@ def draw_grid_detection(img: np.ndarray) -> np.ndarray:
 
     return np.hstack([img, h_bgr, v_bgr, inter_bgr, overlay])
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 def detect_board(debug: bool = False) -> PatchesBoard | None:
     print("Capturing screen...")

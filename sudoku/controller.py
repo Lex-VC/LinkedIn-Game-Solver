@@ -1,6 +1,7 @@
 import copy
 import time
 import ctypes
+import ctypes.wintypes
 import sys
 from pathlib import Path
 
@@ -15,8 +16,8 @@ _MOUSEEVENTF_MOVE     = 0x0001
 _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP   = 0x0004
 _MOUSEEVENTF_ABSOLUTE = 0x8000
+_KEYEVENTF_KEYUP      = 0x0002
 
-# Virtual-key codes for digit keys 1-9
 _VK_DIGIT = {i: 0x30 + i for i in range(1, 10)}
 
 
@@ -41,7 +42,13 @@ def _press_digit(digit: int) -> None:
     vk = _VK_DIGIT[digit]
     _user32.keybd_event(vk, 0, 0, 0)
     time.sleep(0.02)
-    _user32.keybd_event(vk, 0, 2, 0)  # KEYEVENTF_KEYUP = 2
+    _user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
+
+
+def _aborted() -> bool:
+    pos = ctypes.wintypes.POINT()
+    _user32.GetCursorPos(ctypes.byref(pos))
+    return pos.x <= 5 and pos.y <= 5
 
 
 def _cell_center(grid: GridInfo, row: int, col: int) -> tuple[int, int]:
@@ -52,15 +59,7 @@ def _cell_center(grid: GridInfo, row: int, col: int) -> tuple[int, int]:
 
 def execute_solution(grid: GridInfo, original: list[list[int]], solution: list[list[int]],
                      cell_delay: float = 0.08, countdown: int = 3) -> None:
-    """Click each empty cell and type the solved digit.
-
-    Args:
-        grid:        Detected grid info (screen coordinates).
-        original:    9x9 board as detected (0 = empty).
-        solution:    9x9 fully-filled board from the solver.
-        cell_delay:  Seconds to pause after typing each digit.
-        countdown:   Seconds to wait before starting.
-    """
+    """Click each empty cell and type the solved digit."""
     n = len(original)
     empty_cells = [
         (r, c)
@@ -79,10 +78,7 @@ def execute_solution(grid: GridInfo, original: list[list[int]], solution: list[l
         time.sleep(1)
 
     for r, c in empty_cells:
-        # Abort if mouse is at top-left corner
-        pos = ctypes.wintypes.POINT()
-        _user32.GetCursorPos(ctypes.byref(pos))
-        if pos.x <= 5 and pos.y <= 5:
+        if _aborted():
             print("Aborted: mouse moved to top-left corner.")
             return
 

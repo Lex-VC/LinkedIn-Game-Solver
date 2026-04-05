@@ -1,17 +1,3 @@
-"""Crossclimb controller — automates the full Crossclimb puzzle.
-
-Game flow:
-  Phase 1 — Detect the board (rows, word length, clue region).
-  Phase 2 — Click each middle row to collect its clue via OCR.
-  Phase 3 — Send all clues to the AI; get answers + word-ladder order.
-  Phase 4 — Click each row and type the answer.
-  Phase 5 — Drag rows into the correct word-ladder order.
-  Phase 6 — Solve the two locked endpoint rows.
-
-Safety:
-  Move the mouse to the top-left corner (<=5 px) to abort at any time.
-"""
-
 import time
 import ctypes
 import ctypes.wintypes
@@ -32,20 +18,14 @@ _MOUSEEVENTF_LEFTUP    = 0x0004
 _MOUSEEVENTF_ABSOLUTE  = 0x8000
 _KEYEVENTF_KEYUP       = 0x0002
 _VK_RETURN = 0x0D
-_VK_BACK   = 0x08
 
-_SCREEN_W = _user32.GetSystemMetrics(0)
-_SCREEN_H = _user32.GetSystemMetrics(1)
-
-
-# ---------------------------------------------------------------------------
-# Input helpers
-# ---------------------------------------------------------------------------
 
 def _move(x: int, y: int) -> None:
     ox, oy = screen.game_offset()
-    nx = int((x + ox) * 65535 / _SCREEN_W)
-    ny = int((y + oy) * 65535 / _SCREEN_H)
+    screen_w = _user32.GetSystemMetrics(0)
+    screen_h = _user32.GetSystemMetrics(1)
+    nx = int((x + ox) * 65535 / screen_w)
+    ny = int((y + oy) * 65535 / screen_h)
     _user32.mouse_event(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE,
                         nx, ny, 0, 0)
 
@@ -59,7 +39,6 @@ def _click(x: int, y: int) -> None:
 
 
 def _type_text(text: str) -> None:
-    """Type a string character by character."""
     for char in text:
         vk_result = _user32.VkKeyScanW(ord(char))
         vk = vk_result & 0xFF
@@ -86,24 +65,18 @@ def _drag(from_x: int, from_y: int,
           to_x: int, to_y: int,
           duration: float = 0.5,
           overshoot: int = 30) -> None:
-    """Smooth drag from (from_x, from_y) to (to_x, to_y) with overshoot.
-
-    Overshoots past the target in the drag direction so the drop registers,
-    then settles back to the exact target before releasing.
-    """
+    """Smooth drag with overshoot to ensure the drop registers."""
     _move(from_x, from_y)
     time.sleep(0.15)
     _user32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     time.sleep(0.15)
 
-    # Compute overshoot point (extend past target in the drag direction)
     dx = to_x - from_x
     dy = to_y - from_y
     dist = max(1, (dx**2 + dy**2) ** 0.5)
     os_x = int(to_x + overshoot * dx / dist)
     os_y = int(to_y + overshoot * dy / dist)
 
-    # Drag to overshoot point
     steps = max(15, int(abs(to_y - from_y) / 3))
     for i in range(1, steps + 1):
         t = i / steps
@@ -112,37 +85,26 @@ def _drag(from_x: int, from_y: int,
         _move(ix, iy)
         time.sleep(duration / steps)
 
-    # Settle back to exact target
     time.sleep(0.15)
     _user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
 def _aborted() -> bool:
-    """Return True when the mouse is in the top-left escape corner."""
     pos = ctypes.wintypes.POINT()
     _user32.GetCursorPos(ctypes.byref(pos))
     return pos.x <= 5 and pos.y <= 5
 
 
-# ---------------------------------------------------------------------------
-# Game phases
-# ---------------------------------------------------------------------------
-
 def _collect_clues(board: BoardInfo) -> dict[int, str]:
-    """Click each middle row and OCR the clue shown at the bottom.
-
-    Returns {row_index: clue_text}.
-    """
+    """Click each middle row and OCR the clue shown at the bottom."""
     clues: dict[int, str] = {}
-    middle = board.middle_rows
-
-    for row in middle:
+    for row in board.middle_rows:
         if _aborted():
             break
 
         cx, cy = row.center
         _click(cx, cy)
-        time.sleep(1.2)   # wait for clue dropdown to update
+        time.sleep(1.2)
 
         img = screen.capture()
         clue = read_clue(img, board)
@@ -156,8 +118,7 @@ def _collect_clues(board: BoardInfo) -> dict[int, str]:
     return clues
 
 
-def _type_answers(board: BoardInfo,
-                  answers: dict[int, str]) -> None:
+def _type_answers(board: BoardInfo, answers: dict[int, str]) -> None:
     """Click each middle row and type its answer word."""
     middle = sorted(board.middle_rows, key=lambda r: r.y)
 
@@ -178,35 +139,20 @@ def _type_answers(board: BoardInfo,
         print(f"  Typed '{word}' in row {row.index}")
 
 
-def _reorder_rows(board: BoardInfo,
-                  target_order: list[int]) -> None:
-    """Drag middle rows into the word-ladder order.
-
-    *target_order* is a list of row indices from top to bottom.
-    Uses selection sort: for each target position, find the row that
-    belongs there and drag it into place.
-
-    The game uses stack-style movement: dragging a row past others
-    shifts all passed rows by one slot in the opposite direction.
-    We use fixed slot coordinates (each screen position keeps its Y)
-    rather than following row objects whose positions become stale.
-    """
+def _reorder_rows(board: BoardInfo, target_order: list[int]) -> None:
+    """Drag middle rows into word-ladder order using selection sort."""
     middle = sorted(board.middle_rows, key=lambda r: r.y)
 
     if len(middle) != len(target_order):
         print(f"WARNING: {len(middle)} rows but {len(target_order)} in target")
         return
 
-    # Fixed pixel coordinates for each slot — these never change
     slot_coords = [(r.left_handle[0], r.left_handle[1]) for r in middle]
-
-    # Track which row index currently occupies each slot
     current = [r.index for r in middle]
 
     for target_pos in range(len(target_order)):
         target_idx = target_order[target_pos]
 
-        # Find which slot this row currently occupies
         src_pos = None
         for i, idx in enumerate(current):
             if idx == target_idx:
@@ -217,7 +163,7 @@ def _reorder_rows(board: BoardInfo,
             print(f"  WARNING: row {target_idx} not found in current list")
             continue
         if src_pos == target_pos:
-            continue  # already in place
+            continue
 
         if _aborted():
             return
@@ -229,19 +175,12 @@ def _reorder_rows(board: BoardInfo,
         _drag(sx, sy, tx, ty)
         time.sleep(0.6)
 
-        # Update tracking (matches the game's stack behavior)
         moved = current.pop(src_pos)
         current.insert(target_pos, moved)
 
 
-def _solve_locked_rows(board: BoardInfo,
-                       ladder: list[tuple[int, str]]) -> None:
-    """After middle rows are correctly ordered, solve the two locked rows.
-
-    The game gives a single shared clue for both endpoints — a two-word
-    phrase where one word is the top and the other is the bottom.
-    Each answer must differ from its adjacent ladder word by one letter.
-    """
+def _solve_locked_rows(board: BoardInfo, ladder: list[tuple[int, str]]) -> None:
+    """Solve the two locked endpoint rows from their shared clue."""
     locked = board.locked_rows
     if len(locked) < 2:
         print("  Could not find both locked rows.")
@@ -250,10 +189,9 @@ def _solve_locked_rows(board: BoardInfo,
     top_locked = min(locked, key=lambda r: r.y)
     bottom_locked = max(locked, key=lambda r: r.y)
 
-    top_adjacent = ladder[0][1]      # word adjacent to top locked
-    bottom_adjacent = ladder[-1][1]  # word adjacent to bottom locked
+    top_adjacent = ladder[0][1]
+    bottom_adjacent = ladder[-1][1]
 
-    # Click one locked row to reveal the shared clue
     if _aborted():
         return
     _click(*top_locked.center)
@@ -274,7 +212,6 @@ def _solve_locked_rows(board: BoardInfo,
     )
     print(f"  Top answer: {top_word}, Bottom answer: {bottom_word}")
 
-    # Type top answer
     if _aborted():
         return
     _click(*top_locked.center)
@@ -282,7 +219,6 @@ def _solve_locked_rows(board: BoardInfo,
     _type_text(top_word.lower())
     time.sleep(0.5)
 
-    # Type bottom answer
     if _aborted():
         return
     _click(*bottom_locked.center)
@@ -290,10 +226,6 @@ def _solve_locked_rows(board: BoardInfo,
     _type_text(bottom_word.lower())
     time.sleep(0.5)
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 def run_crossclimb(countdown: int = 3, debug: bool = False) -> bool:
     """Run the full Crossclimb solver. Returns True on success."""
@@ -303,8 +235,6 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> bool:
         print(f"  {i}...")
         time.sleep(1)
 
-    # ---- Phase 1: Detect board ----
-    print("\n=== Phase 1: Board Detection ===")
     img = screen.capture()
     board = detect_board(img, debug=debug)
     if board is None:
@@ -314,8 +244,6 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> bool:
     middle = board.middle_rows
     print(f"{len(middle)} middle rows, word length = {board.word_length}")
 
-    # ---- Phase 2: Collect clues ----
-    print("\n=== Phase 2: Collecting Clues ===")
     clues = _collect_clues(board)
 
     if len(clues) < len(middle):
@@ -324,27 +252,20 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> bool:
         print("FATAL: No clues could be read.")
         return False
 
-    # ---- Phase 3: AI solving ----
-    print("\n=== Phase 3: AI Solving ===")
     ladder = solve_crossclimb(clues, board.word_length)
     print("Word-ladder solution:")
     for idx, word in ladder:
         print(f"  Row {idx}: {word}")
 
-    # ---- Phase 4: Type answers ----
-    print("\n=== Phase 4: Typing Answers ===")
     answers = {idx: word for idx, word in ladder}
     _type_answers(board, answers)
 
-    # ---- Phase 5: Reorder rows ----
-    print("\n=== Phase 5: Reordering Rows ===")
     target_order = [idx for idx, _ in ladder]
     current_order = [r.index for r in sorted(middle, key=lambda r: r.y)]
     print(f"  Current: {current_order}")
     print(f"  Target:  {target_order}")
 
     if current_order != target_order:
-        # Re-detect board to get updated positions after typing
         time.sleep(1.0)
         img = screen.capture()
         board2 = detect_board(img)
@@ -356,9 +277,7 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> bool:
     else:
         print("  Already in correct order!")
 
-    # ---- Phase 6: Solve locked rows ----
-    print("\n=== Phase 6: Solving Locked Rows ===")
-    time.sleep(4.0)  # wait for unlock animation
+    time.sleep(4.0)
 
     img = screen.capture()
     board3 = detect_board(img)
@@ -368,7 +287,7 @@ def run_crossclimb(countdown: int = 3, debug: bool = False) -> bool:
 
     _solve_locked_rows(board3, ladder)
 
-    print("\n=== Done! ===")
+    print("\nDone!")
     return True
 
 

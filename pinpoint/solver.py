@@ -59,7 +59,8 @@ def guess_category(clues: list[str], previous_guesses: list[str] | None = None) 
         model="qwen/qwen3-32b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        include_reasoning=False
+        include_reasoning=False,
+        max_completion_tokens=5000
     )
 
     raw = response.choices[0].message.content.strip()

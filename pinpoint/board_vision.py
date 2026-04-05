@@ -11,28 +11,22 @@ import cv2
 import pytesseract
 import screen
 
-# HSV range for the blue gradient block
 _BLUE_LO = np.array([100, 30, 120])
 _BLUE_HI = np.array([125, 255, 255])
 
-# Minimum size for the gradient block
 _MIN_BLOCK_AREA = 30000
 _MIN_BLOCK_WIDTH = 150
 _MIN_BLOCK_HEIGHT = 100
 
 
-
-
-def _find_gradient_block(screen: np.ndarray) -> tuple[int, int, int, int] | None:
+def _find_gradient_block(img: np.ndarray) -> tuple[int, int, int, int] | None:
     """Find the Pinpoint gradient block (the whole blue region).
 
-    Looks for a large blue region where the top is brighter than the bottom
-    (gradient). Returns (x, y, w, h) or None.
+    Returns (x, y, w, h) or None.
     """
-    hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, _BLUE_LO, _BLUE_HI)
 
-    # Close small gaps between bars so they merge into one block
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 20))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
@@ -43,7 +37,6 @@ def _find_gradient_block(screen: np.ndarray) -> tuple[int, int, int, int] | None
         x, y, w, h = cv2.boundingRect(cnt)
         area = w * h
         if area > _MIN_BLOCK_AREA and w > _MIN_BLOCK_WIDTH and h > _MIN_BLOCK_HEIGHT:
-            # Verify gradient: top half should be brighter than bottom half
             mid = y + h // 2
             top_v = float(np.mean(hsv[y:mid, x:x + w, 2]))
             bot_v = float(np.mean(hsv[mid:y + h, x:x + w, 2]))
@@ -53,28 +46,22 @@ def _find_gradient_block(screen: np.ndarray) -> tuple[int, int, int, int] | None
     if not candidates:
         return None
 
-    # Return the largest matching block
     best = max(candidates, key=lambda c: c[4])
     return best[:4]
 
 
-def extract_clue_words(screen: np.ndarray) -> list[str]:
-    """Extract the visible clue words from the Pinpoint gradient block.
-
-    OCRs the entire block and returns revealed words (filtering out "CLUE N" lines).
-    """
-    block = _find_gradient_block(screen)
+def extract_clue_words(img: np.ndarray) -> list[str]:
+    """Extract visible clue words from the Pinpoint gradient block via OCR."""
+    block = _find_gradient_block(img)
     if not block:
         return []
 
     x, y, w, h = block
-    roi = screen[y:y + h, x:x + w]
+    roi = img[y:y + h, x:x + w]
 
-    # White text on blue — threshold to isolate
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 90, 255, cv2.THRESH_BINARY)
 
-    # Upscale for better OCR accuracy if the block is small
     if w < 400:
         scale = 2
         thresh = cv2.resize(thresh, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
@@ -86,7 +73,6 @@ def extract_clue_words(screen: np.ndarray) -> list[str]:
         line = line.strip()
         if not line:
             continue
-        # Skip unrevealed "CLUE 2", "CLUE 3", etc.
         if re.match(r'\b\w*clue\w*\b', line, flags=re.IGNORECASE):
             continue
         clues.append(line)
@@ -94,41 +80,32 @@ def extract_clue_words(screen: np.ndarray) -> list[str]:
     return clues
 
 
-def find_input_box(screen: np.ndarray) -> tuple[int, int] | None:
-    """Find the 'Guess the category...' input box below the gradient block.
-
-    Uses OCR to locate the exact text 'Guess the category...' in the region
-    just below the gradient block.
-    """
-    block = _find_gradient_block(screen)
+def find_input_box(img: np.ndarray) -> tuple[int, int] | None:
+    """Find the 'Guess the category...' input box below the gradient block."""
+    block = _find_gradient_block(img)
     if not block:
         return None
 
     bx, by, bw, bh = block
 
-    # Search region: below the block, same horizontal span
     search_x1 = max(0, bx - 50)
-    search_x2 = min(screen.shape[1], bx + bw + 50)
+    search_x2 = min(img.shape[1], bx + bw + 50)
     search_y1 = by + bh + 20
-    search_y2 = min(screen.shape[0], by + bh + 350)
+    search_y2 = min(img.shape[0], by + bh + 350)
 
-    roi = screen[search_y1:search_y2, search_x1:search_x2]
+    roi = img[search_y1:search_y2, search_x1:search_x2]
     if roi.size == 0:
         return None
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     text_data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
 
-    # Build lines from OCR word data, look for "Guess the category"
-    # Group words by their block/line number
     n = len(text_data["text"])
     lines: dict[tuple[int, int], list[int]] = {}
     for i in range(n):
         key = (text_data["block_num"][i], text_data["line_num"][i])
         lines.setdefault(key, []).append(i)
 
-    # Find all lines matching "Guess...category", take the bottom-most one
-    # (the input placeholder, not the description text above it)
     best_match = None
     best_y = -1
     for key, indices in lines.items():
@@ -151,12 +128,9 @@ def find_input_box(screen: np.ndarray) -> tuple[int, int] | None:
     return None
 
 
-def check_result(screen: np.ndarray) -> str:
-    """Check the current state of the game after submitting a guess.
-
-    Returns: 'correct', 'wrong', or 'unknown'.
-    """
-    hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+def check_result(img: np.ndarray) -> str:
+    """Check game state after submitting a guess. Returns 'correct' or 'unknown'."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lower_green = np.array([40, 50, 100])
     upper_green = np.array([80, 255, 255])
     green_mask = cv2.inRange(hsv, lower_green, upper_green)
@@ -167,13 +141,8 @@ def check_result(screen: np.ndarray) -> str:
     return "unknown"
 
 
-# ---------------------------------------------------------------------------
-# Debug visualisation
-# ---------------------------------------------------------------------------
-
 def draw_debug(img: np.ndarray, block: tuple[int, int, int, int] | None,
                clues: list[str], input_pos: tuple[int, int] | None) -> np.ndarray:
-    """Draw an annotated overlay showing detected gradient block, clues, and input."""
     out = img.copy()
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
@@ -181,7 +150,6 @@ def draw_debug(img: np.ndarray, block: tuple[int, int, int, int] | None,
         x, y, w, h = block
         cv2.rectangle(out, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-        # Show gradient brightness values
         mid = y + h // 2
         top_v = float(np.mean(hsv[y:mid, x:x + w, 2]))
         bot_v = float(np.mean(hsv[mid:y + h, x:x + w, 2]))
@@ -190,12 +158,10 @@ def draw_debug(img: np.ndarray, block: tuple[int, int, int, int] | None,
         cv2.putText(out, f"bot V={bot_v:.0f}", (x + 5, y - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        # List clues on the right
         for i, clue in enumerate(clues):
             cv2.putText(out, f"clue {i + 1}: {clue}", (x + w + 10, y + 25 + i * 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # Show the input search region
         search_y1 = y + h + 20
         search_y2 = min(img.shape[0], y + h + 350)
         cv2.rectangle(out, (max(0, x - 50), search_y1),
@@ -210,7 +176,6 @@ def draw_debug(img: np.ndarray, block: tuple[int, int, int, int] | None,
         cv2.putText(out, "input box", (cx + 20, cy + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
-    # Show screenshot dimensions for DPI debugging
     sh, sw = img.shape[:2]
     cv2.putText(out, f"Screenshot: {sw}x{sh}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 2)
@@ -219,10 +184,9 @@ def draw_debug(img: np.ndarray, block: tuple[int, int, int, int] | None,
 
 
 def detect_board(debug: bool = False) -> list[str] | None:
-    """Main entry point — capture screen, detect gradient block, OCR clues.
+    """Capture screen, detect gradient block, OCR clues.
 
     Returns the list of revealed clue words, or None on failure.
-    When debug=True, shows an annotated window with detection results.
     """
     print("Capturing screen...")
     img = screen.capture()
@@ -262,7 +226,6 @@ def detect_board(debug: bool = False) -> list[str] | None:
         dbg = draw_debug(img, block, clues, input_pos)
         cv2.imshow("Pinpoint — board detection", cv2.resize(dbg, None, fx=0.5, fy=0.5))
 
-        # Also show the OCR threshold image for debugging
         bx, by, bw, bh = block
         roi = img[by:by + bh, bx:bx + bw]
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)

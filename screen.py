@@ -1,18 +1,4 @@
-"""Shared screen-capture and game-region utilities.
-
-Every LinkedIn game lives inside a white "card" on the page.  This module
-detects that card once (via init_game_region) and then restricts all
-subsequent captures to that region, giving each game's board_vision a
-clean, tightly-cropped image to work with.
-
-Usage — dispatcher / standalone controller:
-    import screen
-    screen.init_game_region()   # one-time, after the page has loaded
-    img = screen.capture()      # returns only the game-region crop
-
-Coordinates returned by board_vision are *region-relative*.  Controllers
-must add screen.game_offset() before sending mouse events.
-"""
+"""Shared screen-capture and game-region utilities."""
 from __future__ import annotations
 
 import ctypes
@@ -20,35 +6,16 @@ import numpy as np
 import cv2
 import mss
 
-# ---------------------------------------------------------------------------
-# DPI awareness (Windows) — must run before any mss capture
-# ---------------------------------------------------------------------------
 try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor DPI aware
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
 except Exception:
     pass
 
-# ---------------------------------------------------------------------------
-# Module state
-# ---------------------------------------------------------------------------
-_game_region: tuple[int, int, int, int] | None = None   # (x, y, w, h)
+_game_region: tuple[int, int, int, int] | None = None
+_SAT_THRESHOLD = 20
 
-_SAT_THRESHOLD = 20  # minimum saturation to count as "coloured"
-
-
-# ---------------------------------------------------------------------------
-# Game-region detection
-# ---------------------------------------------------------------------------
 
 def find_game_region(img: np.ndarray) -> tuple[int, int, int, int] | None:
-    """Return (x, y, w, h) of the white game card on screen.
-
-    Strategy:
-      1. Threshold to find near-white pixels (the card background).
-      2. Morphological close to fill small holes.
-      3. Among large contours, pick the one with the highest saturated-pixel
-         score (coloured game content inside the card).
-    """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, white = cv2.threshold(gray, 235, 255, cv2.THRESH_BINARY)
 
@@ -90,19 +57,13 @@ def find_game_region(img: np.ndarray) -> tuple[int, int, int, int] | None:
     return best_region
 
 
-# ---------------------------------------------------------------------------
-# Capture helpers
-# ---------------------------------------------------------------------------
-
 def _capture_full() -> np.ndarray:
-    """Grab the entire primary monitor as a BGR numpy array."""
     with mss.mss() as sct:
         shot = sct.grab(sct.monitors[1])
         return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
 
 
 def capture() -> np.ndarray:
-    """Capture the game region (or full screen if no region is set)."""
     with mss.mss() as sct:
         if _game_region:
             x, y, w, h = _game_region
@@ -113,15 +74,7 @@ def capture() -> np.ndarray:
         return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
 
 
-# ---------------------------------------------------------------------------
-# Region management
-# ---------------------------------------------------------------------------
-
 def init_game_region() -> bool:
-    """Capture full screen, detect the game card, and store its bounds.
-
-    Call once after the game page has loaded.  Returns True on success.
-    """
     global _game_region
     img = _capture_full()
     region = find_game_region(img)
@@ -136,13 +89,11 @@ def init_game_region() -> bool:
 
 
 def reset_game_region() -> None:
-    """Clear the stored game region (e.g. before navigating to a new game)."""
     global _game_region
     _game_region = None
 
 
 def game_offset() -> tuple[int, int]:
-    """Return (ox, oy) to convert region-relative coords to screen coords."""
     if _game_region:
         return (_game_region[0], _game_region[1])
     return (0, 0)
