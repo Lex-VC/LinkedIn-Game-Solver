@@ -4,8 +4,9 @@ A Windows bot that uses computer vision and automated mouse/keyboard input to pl
 
 ## Demo
 
-<!-- Upload your MP4 to GitHub by editing this file on github.com and dragging the video in, then paste the resulting URL below -->
-https://github.com/user-attachments/assets/YOUR_VIDEO_ID_HERE
+
+<video src=https://github.com/user-attachments/assets/779a1568-7fa1-4580-be36-c17891bff567></video>
+
 
 ## Games
 
