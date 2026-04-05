@@ -84,7 +84,6 @@ def run_pinpoint(countdown: int = 3, debug: bool = False) -> bool:
         time.sleep(1)
 
     previous_guesses: list[str] = []
-    prev_clue_count = 0
 
     for round_num in range(1, _MAX_ROUNDS + 1):
         if _aborted():
@@ -102,12 +101,6 @@ def run_pinpoint(countdown: int = 3, debug: bool = False) -> bool:
             time.sleep(2)
             continue
 
-        # Check if new clue appeared (meaning previous guess was wrong)
-        if len(clues) == prev_clue_count and round_num > 1:
-            print("No new clue appeared — might have won or game ended.")
-            return True
-
-        prev_clue_count = len(clues)
         print(f"Clues so far: {clues}")
 
         # Get AI guess
@@ -133,7 +126,12 @@ def run_pinpoint(countdown: int = 3, debug: bool = False) -> bool:
 
         previous_guesses.append(guess)
 
-        # Check if we need to continue — the next iteration will detect if a new clue appeared
+        # Detect win: input box disappears when the puzzle is solved
+        post_img = screen.capture()
+        if find_input_box(post_img) is None:
+            print("Input box gone — puzzle solved!")
+            return True
+
         if round_num == _MAX_ROUNDS:
             print("Used all 5 rounds.")
 

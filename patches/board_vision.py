@@ -300,7 +300,7 @@ def _load_digit_templates() -> dict[int, list[np.ndarray]]:
         if not digit_str.isdigit():
             continue
         n = int(digit_str)
-        if not 1 <= n <= 9:
+        if n < 1:
             continue
         tmpl = _load_template_binary(path)
         if tmpl is not None:

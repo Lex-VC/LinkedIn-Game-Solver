@@ -45,32 +45,21 @@ def guess_category(clues: list[str], previous_guesses: list[str] | None = None) 
     - The category must explain ALL clues, not just the most recent one.
     - Think about what property or context is shared across EVERY clue.
     - Be specific but concise (1-5 words).
-    - Output format: first reason briefly (one sentence per clue), then output your final answer on its own line prefixed with "ANSWER:".
+    - Output ONLY the category. No explanation, no punctuation, no extra text.
 
     Common category types:
     - "___ [word]" or "[word] ___" (compound words or phrases)
     - Things found in a specific place
     - Things that have a specific property
-    - Types of a broader concept
-
-    Now reason through the clues and give your answer:"""
+    - Types of a broader concept"""
 
     response = client.chat.completions.create(
-        model="qwen/qwen3-32b",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         include_reasoning=False,
-        max_completion_tokens=5000
+        max_completion_tokens=4000
     )
 
     raw = response.choices[0].message.content.strip()
-
-    # Extract the ANSWER line
-    for line in raw.splitlines():
-        if line.upper().startswith("ANSWER:"):
-            guess = line.split(":", 1)[1].strip().strip('"\'.,!').strip()
-            return guess
-
-    # Fallback: last non-empty line
-    guess = [l.strip() for l in raw.splitlines() if l.strip()][-1]
-    return guess.strip('"\'.,!').strip()
+    return raw.strip('"\'.,!').strip()

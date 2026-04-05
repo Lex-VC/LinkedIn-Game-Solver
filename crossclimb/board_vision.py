@@ -90,7 +90,7 @@ def _detect_word_length(img: np.ndarray, row: RowInfo | None) -> int:
     if row is None:
         return 4
 
-    margin_x = int(row.w * 0.15)
+    margin_x = int(row.w * 0.05)
     margin_y = int(row.h * 0.20)
     x1 = row.x + margin_x
     x2 = row.x + row.w - margin_x

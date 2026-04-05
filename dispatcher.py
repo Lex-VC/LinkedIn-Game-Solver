@@ -35,12 +35,12 @@ _MOUSEEVENTF_MOVE     = 0x0001
 _MOUSEEVENTF_ABSOLUTE = 0x8000
 
 GAMES = [
+    ("https://www.linkedin.com/games/pinpoint/",      "pinpoint",   run_pinpoint),
     ("https://www.linkedin.com/games/patches/",      "patches",    run_patches),
     ("https://www.linkedin.com/games/zip/",           "zip",        run_zip),
     ("https://www.linkedin.com/games/mini-sudoku/",   "sudoku",     run_sudoku),
     ("https://www.linkedin.com/games/tango/",         "tango",      run_tango),
     ("https://www.linkedin.com/games/queens/",        "queens",     run_queens),
-    ("https://www.linkedin.com/games/pinpoint/",      "pinpoint",   run_pinpoint),
     ("https://www.linkedin.com/games/crossclimb/",    "crossclimb", run_crossclimb),
 ]
 
